@@ -13,13 +13,14 @@
 <p align="center">
   <a href="#быстрый-старт">Быстрый старт</a> ·
   <a href="#как-идёт-задача">Как идёт задача</a> ·
+  <a href="#бэкенд">Бэкенд</a> ·
   <a href="#figma">Figma</a> ·
   <a href="CHANGELOG.md">История версий</a>
 </p>
 
-![Дашборд Makora с этапами проекта и активными задачами](docs/images/dashboard.png)
+![Дашборд Makora с этапами проекта и активными задачами](docs/images/dashboard-light.png)
 
-*Дашборд Makora на демонстрационном проекте. Текущая фаза, фронтенд и лаборатории видны на одном экране.*
+*Светлый обзор на демонстрационных данных. Этапы, задачи и ожидающие решения видны на одном экране.*
 
 | Участник | Что делает |
 | --- | --- |
@@ -45,6 +46,18 @@ node dashboard/server.cjs
 
 Инструкция Codex должна указывать на [регламент](ORCHESTRATION.md) и [руководство по дашборду](dashboard/README.md) из этого клона. Makora слушает loopback и хранит состояние в локальной SQLite.
 
+## Бэкенд
+
+Makora запускается как локальное Node.js-приложение. HTTP-сервер отдаёт браузерный интерфейс и API. Состояние проектов, задачи и решения хранятся в SQLite.
+
+| Файл | Назначение |
+| --- | --- |
+| [`dashboard/server.cjs`](dashboard/server.cjs) | HTTP-сервер, статические файлы и маршруты `GET /api/state`, `POST /api/actions`. |
+| [`dashboard/store.cjs`](dashboard/store.cjs) | SQLite, правила изменения состояния и журнал решений. |
+| [`dashboard/labs.cjs`](dashboard/labs.cjs) и [`dashboard/observer.cjs`](dashboard/observer.cjs) | Запуск лабораторных демо и чтение данных о прогонах OpenCode. |
+| [`dashboard/outsource.cjs`](dashboard/outsource.cjs) и [`dashboard/outsource-archive.cjs`](dashboard/outsource-archive.cjs) | Подготовка задания, проверка полученного архива и интеграция принятого модуля. |
+| [`dashboard/web/`](dashboard/web/) | HTML, CSS и JavaScript интерфейса. |
+
 ## Как идёт задача
 
 ```mermaid
@@ -69,7 +82,7 @@ flowchart LR
 
 Codex открывает и редактирует разрешённый макет через официальный плагин Figma. После чтения файла он сохраняет ключ и ссылки на фреймы в карточке дизайна. Пользователь подтверждает референсы перед работой в Figma и утверждает макет перед передачей в вёрстку.
 
-![Карточка дизайна с фреймами Figma перед вторым подтверждением](docs/images/figma.png)
+![Карточка дизайна с фреймами Figma перед вторым подтверждением](docs/images/figma-light.png)
 
 *Демонстрационный макет. Ссылки и ID на снимке служат примерами.*
 

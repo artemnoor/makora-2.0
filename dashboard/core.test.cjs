@@ -226,7 +226,7 @@ test('HTTP: loopback, Origin, same-origin для решений, размер JS
     if (fs.existsSync(indexFile)) {
       // Собранная панель отдаёт настоящие файлы dashboard/web, а не встроенную копию.
       assert.equal(result.text, fs.readFileSync(indexFile, 'utf8'));
-      assert.match(result.text, /Контрольная комната/);
+      assert.match(result.text, /<title>Makora<\/title>/);
       for (const [name, contentType] of [['app.js', /javascript/], ['styles.css', /css/]]) {
         const file = path.join(webDir, name);
         if (!fs.existsSync(file)) continue;
