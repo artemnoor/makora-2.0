@@ -1,0 +1,6 @@
+{
+  "name": "makora-dashboard",
+  "private": true,
+  "engines": { "node": ">=22.13.0" },
+  "dependencies": { "yauzl": "3.4.0" }
+}

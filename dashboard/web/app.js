@@ -89,7 +89,7 @@
       'projectSelect', 'projectForm', 'projectMeta', 'refreshBtn', 'taskForm',
       'phasePath', 'frontendTrackBody', 'labTrackBody', 'blockers', 'taskList',
       'taskCount', 'decisionFeed', 'gitContent', 'ideaForm', 'ideaList',
-      'labForm', 'labList', 'designForm', 'designList', 'detailDialog',
+      'labForm', 'labList', 'outsourceList', 'designForm', 'designList', 'detailDialog',
       'detailKind', 'detailTitle', 'detailBody', 'toast'
     ].forEach(function (id) { refs[id] = byId(id); });
   }
@@ -512,6 +512,7 @@
       tasks: arrayOf(source.tasks),
       ideas: arrayOf(source.ideas),
       labs: arrayOf(source.labs),
+      outsources: arrayOf(source.outsources),
       designs: arrayOf(source.designs),
       runs: arrayOf(source.runs),
       decisions: arrayOf(source.decisions)
@@ -548,6 +549,7 @@
         entry.start = control.selectionStart;
         entry.end = control.selectionEnd;
       }
+      if (control.type === 'file') entry.files = Array.from(control.files);
       entries.push(entry);
     }
     var active = document.activeElement;
@@ -574,6 +576,12 @@
       if (control.tagName === 'SELECT') {
         var options = Array.prototype.slice.call(control.options || []);
         if (options.some(function (option) { return option.value === entry.value; })) control.value = entry.value;
+      } else if (control.type === 'file') {
+        if (entry.files && entry.files.length) {
+          var transfer = new DataTransfer();
+          entry.files.forEach(function (file) { transfer.items.add(file); });
+          control.files = transfer.files;
+        }
       } else if (control.type === 'checkbox' || control.type === 'radio') {
         control.checked = entry.checked;
       } else {
@@ -1622,6 +1630,98 @@
     toastTimer = window.setTimeout(function () { refs.toast.hidden = true; }, kind === 'error' ? 7000 : 4200);
   }
 
+  function outsourceEndpoint(projectId, id, resource) {
+    return '/api/outsources/' + encodeURIComponent(projectId) + '/' + encodeURIComponent(id) + '/' + resource;
+  }
+
+  function renderOutsources() {
+    var project = selectedProject();
+    var items = project ? project.outsources : [];
+    var labels = { prepared: 'ТЗ готово', imported: 'Архив на проверке', accepted: 'Архив принят', integrated: 'Файлы в проекте' };
+    renderRegion('outsource', refs.outsourceList, [project && project.id, items], function () {
+      if (!items.length) {
+        return emptyState('Заданий на аутсорс пока нет', 'Подготовьте ТЗ, передайте его внешнему исполнителю и загрузите полученный ZIP.');
+      }
+      return items.map(function (item) {
+        var body = [
+          el('h3', {}, item.title),
+          el('p', { class: 'subtle' }, labels[item.state] + ' · API ' + item.contractVersion + ' · ' + item.targetPath),
+          el('div', { class: 'form-actions' }, [
+            el('a', { class: 'btn', attrs: { href: outsourceEndpoint(project.id, item.id, 'brief') } }, 'Скачать ТЗ'),
+            el('a', { class: 'btn', attrs: { href: outsourceEndpoint(project.id, item.id, 'contract') } }, 'Скачать OpenAPI')
+          ])
+        ];
+        var revision = item.id + '-' + (item.artifact ? item.artifact.sha256 : 'new');
+        if (item.state === 'prepared' || item.state === 'imported') {
+          var uploadId = 'zip-' + item.id;
+          body.push(el('form', { class: 'editor-form', data: { actionForm: 'outsource-upload', id: item.id } }, [
+            el('div', { class: 'field' }, [
+              el('label', { attrs: { for: uploadId } }, item.artifact ? 'Заменить ZIP' : 'ZIP от исполнителя'),
+              el('input', { attrs: { id: uploadId, type: 'file', name: 'archive', accept: '.zip,application/zip', required: true },
+                data: { draftKey: 'zip-' + revision } })
+            ]),
+            el('button', { attrs: { type: 'submit' }, class: 'btn' }, 'Загрузить ZIP')
+          ]));
+        }
+        if (item.artifact) {
+          body.push(el('details', { class: 'disclosure' }, [
+            el('summary', {}, 'Файлы и SHA-256'),
+            el('div', { class: 'disclosure-body' }, [
+              el('button', { class: 'btn', attrs: { type: 'button' },
+                data: { command: 'copy', copy: item.artifact.location } }, 'Скопировать путь к папке для ревью'),
+              el('p', { class: 'mono outsource-hash' }, item.artifact.sha256),
+              el('ul', {}, item.artifact.files.map(function (file) {
+                return el('li', { class: 'mono outsource-hash' }, file.path);
+              }))
+            ])
+          ]));
+        }
+        if (item.state === 'imported') {
+          var evidenceId = 'outsource-evidence-' + item.id;
+          body.push(el('form', { class: 'editor-form', data: {
+            actionForm: 'outsource-accept', id: item.id, sha256: item.artifact.sha256
+          } }, [
+            el('div', { class: 'field' }, [
+              el('label', { attrs: { for: evidenceId } }, 'Результат ревью и проверок'),
+              el('textarea', { attrs: { id: evidenceId, name: 'evidence', rows: 2, required: true, maxlength: 4000 },
+                data: { draftKey: 'evidence-' + revision } })
+            ]),
+            el('button', { attrs: { type: 'submit' }, class: 'btn btn-primary' }, 'Принять проверенный архив')
+          ]));
+        }
+        if (item.evidence) body.push(el('p', { class: 'subtle' }, item.evidence));
+        if (item.state === 'accepted') {
+          body.push(el('form', { class: 'form-actions', data: {
+            actionForm: 'outsource-integrate', id: item.id, sha256: item.artifact.sha256
+          } }, [
+            el('button', { attrs: { type: 'submit' }, class: 'btn btn-primary' }, 'Добавить файлы в проект')
+          ]));
+        }
+        return el('article', { class: 'editor-form' }, body);
+      });
+    });
+  }
+
+  async function uploadOutsource(project, form, button) {
+    var file = form.elements.archive.files[0];
+    if (!file) return;
+    button.disabled = true;
+    try {
+      var response = await fetch(outsourceEndpoint(project.id, form.dataset.id, 'archive'), {
+        method: 'POST', headers: { 'Content-Type': 'application/zip' }, body: file
+      });
+      var result = await response.json();
+      if (!response.ok || result.ok !== true) throw new Error(result.error || 'HTTP ' + response.status);
+      form.reset();
+      notify('Архив загружен для проверки.');
+      await loadState();
+    } catch (error) {
+      notify('Ошибка загрузки: ' + error.message, 'error');
+    } finally {
+      button.disabled = false;
+    }
+  }
+
   function renderAll() {
     renderStatus();
     renderProjectOptions();
@@ -1634,6 +1734,7 @@
     renderGit();
     renderIdeas();
     renderLabs();
+    renderOutsources();
     renderDesigns();
   }
 
@@ -1801,6 +1902,36 @@
       if (proposal) ideaPayload.proposal = proposal;
       if (afterTaskId) ideaPayload.afterTaskId = afterTaskId;
       sendAction(ideaPayload, button, 'Идея отправлена.').then(function (result) { if (result !== false) form.reset(); });
+      return;
+    }
+
+    if (kind === 'outsourceForm') {
+      var contract;
+      try { contract = JSON.parse(formValue(form, 'openapi')); }
+      catch (error) { notify('Введите корректный JSON OpenAPI.', 'error'); return; }
+      var criteriaLines = formValue(form, 'criteria').split(/\r?\n/).map(function (line) { return line.trim(); }).filter(Boolean);
+      var specification = { action: 'outsource.create', openapi: contract, criteria: criteriaLines };
+      ['title', 'targetPath', 'goal', 'context', 'boundaries'].forEach(function (key) {
+        specification[key] = formValue(form, key);
+      });
+      sendAction(specification, button, 'ТЗ сохранено.').then(function (result) { if (result !== false) form.reset(); });
+      return;
+    }
+
+    if (kind === 'outsource-upload') {
+      uploadOutsource(project, form, button);
+      return;
+    }
+
+    if (kind === 'outsource-accept' || kind === 'outsource-integrate') {
+      var accepting = kind === 'outsource-accept';
+      var outcome = {
+        action: accepting ? 'outsource.accept' : 'outsource.integrate',
+        id: form.dataset.id,
+        sha256: form.dataset.sha256
+      };
+      if (accepting) outcome.evidence = formValue(form, 'evidence');
+      sendAction(outcome, button, accepting ? 'Архив принят.' : 'Файлы добавлены в проект.');
       return;
     }
 

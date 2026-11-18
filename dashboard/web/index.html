@@ -200,6 +200,7 @@
             <button type="button" role="tab" id="tab-git" aria-controls="panel-git" aria-selected="true" tabindex="0" data-tab="git">Git</button>
             <button type="button" role="tab" id="tab-ideas" aria-controls="panel-ideas" aria-selected="false" tabindex="-1" data-tab="ideas">Идеи</button>
             <button type="button" role="tab" id="tab-labs" aria-controls="panel-labs" aria-selected="false" tabindex="-1" data-tab="labs">Лаборатории</button>
+            <button type="button" role="tab" id="tab-outsource" aria-controls="panel-outsource" aria-selected="false" tabindex="-1" data-tab="outsource">Аутсорс</button>
             <button type="button" role="tab" id="tab-design" aria-controls="panel-design" aria-selected="false" tabindex="-1" data-tab="design">Дизайн</button>
           </div>
         </div>
@@ -269,6 +270,49 @@
             </div>
           </form>
           <div id="labList" class="dynamic-region"></div>
+        </div>
+
+        <div id="panel-outsource" role="tabpanel" aria-labelledby="tab-outsource" data-tab-panel="outsource" hidden>
+          <details class="disclosure">
+            <summary>Подготовить ТЗ</summary>
+            <form id="outsourceForm" class="editor-form" autocomplete="off">
+              <div class="editor-form-grid">
+                <div class="field">
+                  <label for="outsourceTitle">Название модуля</label>
+                  <input id="outsourceTitle" name="title" required maxlength="180">
+                </div>
+                <div class="field">
+                  <label for="outsourceTarget">Новый каталог в проекте</label>
+                  <input id="outsourceTarget" name="targetPath" placeholder="modules/billing" required spellcheck="false">
+                </div>
+                <div class="field field-wide">
+                  <label for="outsourceGoal">Что должен делать модуль</label>
+                  <textarea id="outsourceGoal" name="goal" rows="2" required maxlength="3000"></textarea>
+                </div>
+                <div class="field">
+                  <label for="outsourceContext">Контекст и синтетические примеры</label>
+                  <textarea id="outsourceContext" name="context" rows="3" required maxlength="5000"></textarea>
+                </div>
+                <div class="field">
+                  <label for="outsourceBoundaries">Границы и зависимости</label>
+                  <textarea id="outsourceBoundaries" name="boundaries" rows="3" required maxlength="5000"></textarea>
+                </div>
+                <div class="field field-wide">
+                  <label for="outsourceCriteria">Критерии приёмки, по одному на строку</label>
+                  <textarea id="outsourceCriteria" name="criteria" rows="3" required></textarea>
+                </div>
+                <div class="field field-wide">
+                  <label for="outsourceOpenapi">Контракт OpenAPI 3.0 или 3.1 в JSON</label>
+                  <textarea id="outsourceOpenapi" name="openapi" rows="7" spellcheck="false" required></textarea>
+                </div>
+              </div>
+              <div class="form-actions">
+                <button type="submit" class="btn btn-primary">Сохранить ТЗ</button>
+                <p class="hint">Используйте синтетические примеры. Перед отправкой проверьте содержимое ТЗ.</p>
+              </div>
+            </form>
+          </details>
+          <div id="outsourceList" class="dynamic-region"></div>
         </div>
 
         <div id="panel-design" role="tabpanel" aria-labelledby="tab-design" data-tab-panel="design" hidden>

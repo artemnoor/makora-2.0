@@ -1,12 +1,33 @@
 'use strict';
 
 // Хранилище состояния панели. Только SQLite (node:sqlite) и стандартная библиотека.
-// Панель ведёт учёт решений и запусков; она никогда не меняет исходный код проекта.
+// Панель хранит состояния и доказательства решений по проектам.
 
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
+const outsource = require('./outsource.cjs');
+const archive = require('./outsource-archive.cjs');
+
+function outsourceOpenForImport(item) {
+  return ['prepared', 'imported'].includes(item.state);
+}
+
+function outsourceView(row) {
+  const spec = JSON.parse(row.spec);
+  const artifact = row.artifact ? JSON.parse(row.artifact) : null;
+  return {
+    id: row.id,
+    title: spec.title,
+    targetPath: spec.targetPath,
+    contractVersion: spec.openapi.info.version,
+    state: row.state,
+    artifact,
+    evidence: row.evidence,
+    updatedAt: row.updated_at,
+  };
+}
 
 const PHASES = ['brief', 'architecture', 'scaffold', 'implementation', 'assembly', 'acceptance', 'complete'];
 const DESIGN_STEPS = [
@@ -243,6 +264,16 @@ class Store {
         UNIQUE (project_id, norm_text),
         FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
       );
+      CREATE TABLE IF NOT EXISTS outsources (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        spec TEXT NOT NULL,
+        artifact TEXT,
+        evidence TEXT,
+        state TEXT NOT NULL CHECK (state IN ('prepared', 'imported', 'accepted', 'integrated')),
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS outsources_project ON outsources(project_id);
       CREATE TABLE IF NOT EXISTS labs (
         id TEXT PRIMARY KEY,
         project_id TEXT NOT NULL,
@@ -494,6 +525,8 @@ class Store {
       tasks,
       ideas,
       labs,
+      outsources: this.db.prepare('SELECT * FROM outsources WHERE project_id = ? ORDER BY updated_at DESC, id')
+        .all(project.id).map(outsourceView),
       designs,
       runs,
       decisions,
@@ -559,6 +592,9 @@ class Store {
       case 'task.accept': result = this.taskAccept(payload, actor); break;
       case 'idea.add': result = this.ideaAdd(payload, actor); break;
       case 'idea.decide': result = this.ideaDecide(payload, actor); break;
+      case 'outsource.create': result = this.outsourceCreate(payload, actor); break;
+      case 'outsource.accept': result = this.outsourceAccept(payload, actor); break;
+      case 'outsource.integrate': result = this.outsourceIntegrate(payload, actor); break;
       case 'lab.propose': result = this.labPropose(payload, actor); break;
       case 'lab.decide': result = this.labDecide(payload, actor); break;
       case 'lab.configure': result = this.labConfigure(payload, actor); break;
@@ -570,6 +606,137 @@ class Store {
     }
     this.log('debug', 'action performed', { action, actor, idempotent: Boolean(result.idempotent) });
     return result;
+  }
+
+  getOutsource(projectId, id) {
+    const project = this.getProject(projectId);
+    if (typeof id !== 'string' || !/^outsource_[a-f0-9]{16}$/.test(id)) {
+      outsource.fail('Укажите ID задания аутсорса.', 'invalid_id');
+    }
+    const row = this.db.prepare('SELECT * FROM outsources WHERE project_id = ? AND id = ?').get(project.id, id);
+    if (!row) outsource.fail('Задание аутсорса не найдено в этом проекте.', 'not_found', 404);
+    return row;
+  }
+
+  outsourceCreate(payload, actor) {
+    const project = this.getProject(payload.projectId);
+    const spec = outsource.specification(payload);
+    const id = newId('outsource');
+    this.transaction(() => {
+      this.db.prepare("INSERT INTO outsources(id, project_id, spec, state, updated_at) VALUES (?, ?, ?, 'prepared', ?)")
+        .run(id, project.id, JSON.stringify(spec), this.now());
+      this.audit(project.id, 'outsource.create', actor, { id, targetPath: spec.targetPath });
+    });
+    return this.outsourceResult(project.id, id);
+  }
+
+  outsourceResult(projectId, id, idempotent = false) {
+    return { ok: true, projectId, idempotent, outsource: outsourceView(this.getOutsource(projectId, id)) };
+  }
+
+  outsourceBrief(projectId, id) {
+    const row = this.getOutsource(projectId, id);
+    return outsource.brief(row.id, JSON.parse(row.spec));
+  }
+
+  async outsourceImport(projectId, id, buffer, actor) {
+    const digest = outsource.sha256(buffer);
+    const initial = outsourceView(this.getOutsource(projectId, id));
+    const same = initial.artifact?.sha256 === digest;
+    if (!same && !outsourceOpenForImport(initial)) {
+      outsource.fail('Создайте новое задание для следующей версии после приёмки.', 'state', 409);
+    }
+    const files = await archive.readArchive(buffer, this.outsourceBrief(projectId, id));
+    let staged;
+    let previous;
+    let idempotent;
+    try {
+      this.transaction(() => {
+        const current = outsourceView(this.getOutsource(projectId, id));
+        const matches = current.artifact?.sha256 === digest;
+        if (matches) {
+          try {
+            archive.checkArtifact(this.dataDir, current.artifact);
+            idempotent = true;
+            return;
+          } catch (error) {
+            if (!(error instanceof outsource.OutsourceError)) throw error;
+          }
+        }
+        if (!matches && !outsourceOpenForImport(current)) {
+          outsource.fail('Задание изменилось. Обновите карточку и проверьте статус.', 'state', 409);
+        }
+        staged = archive.stage(this.dataDir, files, digest);
+        previous = current.artifact;
+        this.db.prepare('UPDATE outsources SET state = ?, artifact = ?, updated_at = ? WHERE id = ?')
+          .run(matches ? current.state : 'imported', JSON.stringify(staged), this.now(), id);
+        this.audit(projectId, 'outsource.import', actor, { id, sha256: digest, files: staged.files.length });
+      });
+    } catch (error) {
+      this.discardOutsourceArtifact(staged);
+      throw error;
+    }
+    this.discardOutsourceArtifact(previous);
+    return this.outsourceResult(projectId, id, idempotent);
+  }
+
+  discardOutsourceArtifact(artifact) {
+    try {
+      archive.discard(artifact);
+    } catch (error) {
+      this.log('warn', 'cannot remove previous outsource artifact', { folder: artifact?.folder, error: error.message });
+    }
+  }
+
+  outsourceAccept(payload, actor) {
+    const { projectId, id } = payload;
+    const evidence = outsource.field(payload.evidence, 'Результат проверки', 4000);
+    let idempotent = false;
+    this.transaction(() => {
+      const current = outsourceView(this.getOutsource(projectId, id));
+      if (!current.artifact || current.artifact.sha256 !== payload.sha256) {
+        outsource.fail('Укажите SHA-256 актуального архива после его проверки.', 'digest_mismatch', 409);
+      }
+      if (current.state === 'accepted' || current.state === 'integrated') {
+        idempotent = true;
+        return;
+      }
+      archive.checkArtifact(this.dataDir, current.artifact);
+      this.db.prepare("UPDATE outsources SET state = 'accepted', evidence = ?, updated_at = ? WHERE id = ?")
+        .run(evidence, this.now(), id);
+      this.audit(projectId, 'outsource.accept', actor, { id, sha256: payload.sha256, evidence });
+    });
+    return this.outsourceResult(projectId, id, idempotent);
+  }
+
+  outsourceIntegrate(payload, actor) {
+    const { projectId, id } = payload;
+    const project = this.getProject(projectId);
+    let options;
+    let idempotent = false;
+    this.transaction(() => {
+      const current = outsourceView(this.getOutsource(projectId, id));
+      if (!['accepted', 'integrated'].includes(current.state)) {
+        outsource.fail('Сначала примите архив после проверки.', 'state', 409);
+      }
+      if (current.artifact.sha256 !== payload.sha256) {
+        outsource.fail('Укажите SHA-256 принятого архива.', 'digest_mismatch', 409);
+      }
+      options = { id, projectPath: project.path, targetPath: current.targetPath, dataDir: this.dataDir, artifact: current.artifact };
+      if (current.state === 'integrated') {
+        idempotent = true;
+        return;
+      }
+      archive.integrate(options);
+      this.db.prepare("UPDATE outsources SET state = 'integrated', updated_at = ? WHERE id = ?").run(this.now(), id);
+      this.audit(projectId, 'outsource.integrate', actor, { id, sha256: payload.sha256, targetPath: current.targetPath });
+    });
+    try {
+      archive.finishIntegration(options);
+    } catch (error) {
+      this.log('warn', 'cannot remove outsource integration marker', { id, error: error.message });
+    }
+    return this.outsourceResult(projectId, id, idempotent);
   }
 
   projectAdd(payload, actor) {

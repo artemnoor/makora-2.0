@@ -34,6 +34,7 @@
 ```powershell
 git clone https://github.com/artemnoor/makora-2.0.git
 Set-Location makora-2.0
+npm ci --ignore-scripts
 $env:DASHBOARD_DATA_DIR = Join-Path $env:LOCALAPPDATA "Codex/OpenCode Dashboard"
 node dashboard/server.cjs
 ```
@@ -60,6 +61,7 @@ flowchart LR
 
 - **Git и сессии.** Видны пути рабочих копий, SHA, ID сессий и результаты E Verified Batch. Приёмка Codex сохраняется отдельно от завершения сессии OpenCode.
 - **Лаборатории.** Согласуй рискованный сценарий, открой изолированное демо на отдельном порту и зафиксируй решение.
+- **Аутсорс.** Скачайте ТЗ и OpenAPI для внешней модели, примите ZIP после ревью и добавьте файлы в отдельный каталог проекта. [Руководство по аутсорсу](dashboard/README.md#аутсорс)
 - **Идеи.** Отправь из чата Codex «Добавь идею в проект …». Codex сохранит исходный текст и предложит, когда к нему вернуться.
 - **Профили моделей.** Промпт подстраивается под модель, а контракт, границы записи и критерии тикета сохраняются. [Навык создания профилей](skills/model-prompt-profile/SKILL.md)
 
@@ -83,5 +85,5 @@ Codex открывает и редактирует разрешённый мак
 Проверки из корня клона:
 
 ```powershell
-node --test workers.scope.test.cjs workers.verified.test.cjs dashboard/core.test.cjs dashboard/adapters.test.cjs
+node --test workers.scope.test.cjs workers.verified.test.cjs dashboard/core.test.cjs dashboard/adapters.test.cjs dashboard/outsource.test.cjs
 ```

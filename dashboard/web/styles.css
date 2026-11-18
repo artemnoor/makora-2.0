@@ -620,3 +620,5 @@ input::placeholder, textarea::placeholder { color: #6f7f74; }
   html { scroll-behavior: auto; }
   *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
 }
+
+.outsource-hash { overflow-wrap: anywhere; }
