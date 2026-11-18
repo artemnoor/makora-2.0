@@ -383,34 +383,17 @@
     return 'neutral';
   }
 
-  function figmaConnected(project, design) {
-    if (!view.raw) return null;
-    // Сервер отдаёт флаг соединения верхним уровнем: GET /api/state → { figmaConnected, ...state }.
-    var direct = firstDefined(view.raw, ['figmaConnected']);
-    if (typeof direct === 'boolean') return direct;
-    if (design && firstDefined(design, ['figmaConnected']) === false) return false;
-    if (design && design.figma && firstDefined(design.figma, ['connected', 'ok']) === false) return false;
-    if (design && firstDefined(design, ['figmaConnected']) === true) return true;
-    if (design && design.figma && firstDefined(design.figma, ['connected', 'ok']) === true) return true;
-    if (project && firstDefined(project.raw, ['figmaConnected']) === true) return true;
-    if (project && project.raw.figma && firstDefined(project.raw.figma, ['connected', 'ok']) === true) return true;
-    if (view.raw.figma && firstDefined(view.raw.figma, ['connected', 'ok']) === true) return true;
-    if (view.raw.figmaConnection && firstDefined(view.raw.figmaConnection, ['connected', 'ok']) === true) return true;
-    var statuses = [];
-    if (design && design.figma) statuses.push(firstDefined(design.figma, ['status', 'state']));
-    if (project && project.raw.figma) statuses.push(firstDefined(project.raw.figma, ['status', 'state']));
-    if (project && project.raw.connections && project.raw.connections.figma) {
-      statuses.push(firstDefined(project.raw.connections.figma, ['status', 'state', 'connected']));
+  function designSyncProof(design) {
+    if (!design || !Array.isArray(design.history)) return null;
+    for (var i = design.history.length - 1; i >= 0; i -= 1) {
+      var entry = design.history[i];
+      if (!entry || lower(firstDefined(entry, ['step'])) !== 'figma_ready') continue;
+      if (firstDefined(entry, ['source']) !== 'figma-mcp' || firstDefined(entry, ['verified']) !== true) continue;
+      var frames = arrayOf(firstDefined(entry, ['frames']));
+      if (!frames.length) continue;
+      return entry;
     }
-    if (view.raw.connections && view.raw.connections.figma) {
-      statuses.push(firstDefined(view.raw.connections.figma, ['status', 'state', 'connected']));
-    }
-    if (view.raw.figma) statuses.push(firstDefined(view.raw.figma, ['status', 'state']));
-    for (var i = 0; i < statuses.length; i += 1) {
-      var key = lower(statuses[i]);
-      if (key === 'connected' || key === 'active' || key === 'ok' || key === 'true') return true;
-    }
-    return false;
+    return null;
   }
 
   function labConfig(lab) {
@@ -628,11 +611,17 @@
     refs.syncTime.textContent = view.lastSync
       ? 'Обновление: ' + view.lastSync.toLocaleTimeString('ru-RU')
       : 'Обновление: —';
-    var connection = figmaConnected(selectedProject(), null);
-    refs.figmaStatus.dataset.state = connection === null ? 'loading' : (connection ? 'connected' : 'unknown');
-    refs.figmaStatusText.textContent = connection === null
-      ? 'Figma: соединение неизвестно'
-      : (connection ? 'Figma: соединение подтверждено' : 'Figma: соединение не подтверждено');
+    var project = selectedProject();
+    var hasSynced = false;
+    if (project) {
+      for (var i = 0; i < project.designs.length; i += 1) {
+        if (designSyncProof(project.designs[i])) { hasSynced = true; break; }
+      }
+    }
+    refs.figmaStatus.dataset.state = hasSynced ? 'connected' : 'unknown';
+    refs.figmaStatusText.textContent = hasSynced
+      ? 'Figma: есть сохранённая синхронизация'
+      : 'Figma: статус по артефактам дизайна';
   }
 
   function renderProjectOptions() {
@@ -824,8 +813,14 @@
       }
       var step = DESIGN_STEPS[index + 1];
       if (!step) return;
-      if (step.id.indexOf('figma_') === 0 && !figmaConnected(project, design)) {
-        result.push({ title: 'Дизайн ' + (idOf(design) || 'без ID') + ': Figma не подключена', text: 'Шаг ' + step.id + ' заблокирован.', tab: 'design' });
+      if (step.id === 'figma_ready') {
+        result.push({ title: 'Дизайн ' + (idOf(design) || 'без ID') + ': ожидание синхронизации Figma', text: 'Синхронизация выполняется из Codex (design.figma.sync).', tab: 'design' });
+      } else if (step.id === 'figma_approved') {
+        if (designSyncProof(design)) {
+          result.push({ title: 'Дизайн ' + (idOf(design) || 'без ID') + ': нужно решение человека', text: 'Следующий шаг: ' + step.label + '.', tab: 'design' });
+        } else {
+          result.push({ title: 'Дизайн ' + (idOf(design) || 'без ID') + ': требуется синхронизация Figma', text: 'Подтверждение доступно после сохранённой синхронизации из Codex.', tab: 'design' });
+        }
       } else if (HUMAN_DESIGN_STEPS.indexOf(step.id) !== -1 || step.id === 'reviewed') {
         result.push({ title: 'Дизайн ' + (idOf(design) || 'без ID') + ': нужно решение человека', text: 'Следующий шаг: ' + step.label + '.', tab: 'design' });
       }
@@ -1314,7 +1309,6 @@
     var map = {
       references_ready: ['Ссылки на исходные материалы', 'Комментарий (необязательно)'],
       references_approved: ['Артефакт (необязательно)', 'Явное решение человека (необязательно)'],
-      figma_ready: ['Ссылка на файл Figma', 'Комментарий (необязательно)'],
       figma_approved: ['Артефакт (необязательно)', 'Явное решение человека (необязательно)'],
       implemented: ['Артефакт / путь реализации', 'Комментарий (необязательно)'],
       reviewed: ['Доказательства проверки', 'Итог проверки (необязательно)']
@@ -1323,8 +1317,8 @@
   }
 
   function designBlockReason(project, design, stepId) {
-    if (typeof stepId === 'string' && stepId.indexOf('figma_') === 0 && !figmaConnected(project, design)) {
-      return 'Соединение Figma не подтверждено. Шаги figma_ready и figma_approved заблокированы явно: подключение выполняется вне дашборда.';
+    if (stepId === 'figma_approved' && !designSyncProof(design)) {
+      return 'Подтверждение Figma доступно только после сохранённой синхронизации из Codex (design.figma.sync).';
     }
     return '';
   }
@@ -1332,18 +1326,35 @@
   function validateAdvance(stepId, artifact, note, frames, project, design) {
     var block = designBlockReason(project, design, stepId);
     if (block) return block;
+    if (stepId === 'figma_ready') return 'Шаг figma_ready выполняется только через синхронизацию Figma из Codex.';
     if (stepId === 'references_ready') {
       if (!artifact.trim()) return 'Укажите ссылки на исходные материалы.';
       if (!looksLikeLink(artifact)) return 'В артефакте нужна http(s)-ссылка или путь к файлу.';
-    }
-    if (stepId === 'figma_ready') {
-      if (!isFigmaArtifact(artifact)) return 'Укажите в artifact ссылку на файл figma.com (http/https).';
-      if (!frames.length) return 'Укажите хотя бы один фрейм в отдельном списке фреймов.';
     }
     if (stepId === 'implemented' && !artifact.trim()) return 'Укажите артефакт реализации.';
     if (stepId === 'reviewed' && !artifact.trim()) return 'Укажите доказательства проверки.';
     // Для human-шагов Store требует только явного решения в браузере: note необязателен.
     return '';
+  }
+
+  function renderSyncFrames(frames) {
+    var list = arrayOf(frames);
+    if (!list.length) return null;
+    var hasObjects = list.some(function (item) { return item && typeof item === 'object' && !Array.isArray(item) && (item.nodeId || item.url); });
+    if (!hasObjects) return linesBlock('Фреймы', frames);
+    return el('div', {}, [
+      el('p', { class: 'card-text', text: 'Фреймы' }),
+      el('ul', { class: 'list-lines' }, list.map(function (item) {
+        if (!item || typeof item !== 'object') return el('li', { text: text(item, '') });
+        var label = text(firstDefined(item, ['name', 'title']), 'Фрейм');
+        var nodeId = firstDefined(item, ['nodeId', 'id']);
+        var url = firstDefined(item, ['url', 'href', 'link']);
+        var parts = [el('span', { text: label })];
+        if (nodeId) parts.push(el('span', { class: 'value mono', text: ' · nodeId: ' + text(nodeId) }));
+        if (url) parts.push(el('div', {}, linkRow('Ссылка', url)));
+        return el('li', {}, parts);
+      }))
+    ]);
   }
 
   function designHistoryBlock(design) {
@@ -1353,21 +1364,26 @@
     }
     return el('div', { class: 'history-list' }, history.map(function (entry, position) {
       var stepId = lower(firstDefined(entry, ['step', 'id', 'to']));
-      var artifact = firstDefined(entry, ['artifact', 'artifactPath', 'url']);
+      var artifact = firstDefined(entry, ['artifact', 'artifactPath', 'url', 'fileUrl']);
       var noteValue = firstDefined(entry, ['note', 'evidence']);
       var frames = firstDefined(entry, ['frames', 'frameList']);
+      var fileKey = firstDefined(entry, ['fileKey']);
+      var verified = firstDefined(entry, ['verified']);
+      var infoCells = [
+        kv('Источник', firstDefined(entry, ['source', 'actor', 'by']) || 'неизвестно', true),
+        kv('Время', firstDefined(entry, ['ts', 'timestamp', 'createdAt', 'at']) || 'неизвестно', true)
+      ];
+      if (fileKey) infoCells.push(kv('Ключ файла', fileKey, true));
+      if (verified === true) infoCells.push(kv('Проверка', 'подтверждена (MCP)'));
       var nodes = [
         el('div', { class: 'history-head' }, [
           badge(designStepLabel(stepId), stepId.indexOf('figma_') === 0 ? 'active' : 'complete'),
           el('span', { class: 'action-note', text: 'запись ' + (position + 1) })
         ]),
-        kvGrid([
-          kv('Источник', firstDefined(entry, ['source', 'actor', 'by']) || 'неизвестно', true),
-          kv('Время', firstDefined(entry, ['ts', 'timestamp', 'createdAt', 'at']) || 'неизвестно', true)
-        ]),
+        kvGrid(infoCells),
         linkRow('Артефакт', artifact)
       ];
-      var frameNodes = linesBlock('Фреймы', frames);
+      var frameNodes = renderSyncFrames(frames);
       if (frameNodes) nodes.push(frameNodes);
       if (noteValue !== undefined && noteValue !== null && noteValue !== '') {
         nodes.push(el('p', { class: 'card-text', text: text(noteValue) }));
@@ -1378,27 +1394,19 @@
 
   function renderDesigns() {
     var project = selectedProject();
-    var connection = figmaConnected(project, null);
-    var stamp = project ? project.id + ':' + JSON.stringify([project.designs, connection]) : 'none';
+    var stamp = project ? project.id + ':' + JSON.stringify(project.designs) : 'none';
     renderRegion('designs', refs.designList, stamp, function () {
       if (!project) return emptyState('Нет проекта', 'Выберите проект.');
-      var pieces = [];
-      if (connection === false) {
-        pieces.push(el('p', { class: 'action-note', text: 'Соединение Figma не подтверждено: шаги figma_ready и figma_approved заблокированы. Подключение выполняется вне дашборда.' }));
-      }
-      if (!project.designs.length) {
-        pieces.push(emptyState('Дизайнов нет', 'Создайте дизайн формой выше.'));
-        return pieces;
-      }
-      project.designs.forEach(function (design) {
+      if (!project.designs.length) return [emptyState('Дизайнов нет', 'Создайте дизайн формой выше.')];
+      return project.designs.map(function (design) {
         var id = idOf(design);
         var index = designStepIndex(design);
         var current = index === null ? null : (index >= 0 ? DESIGN_STEPS[index] : { id: 'created', label: 'создано' });
+        var proof = designSyncProof(design);
         var chips = DESIGN_STEPS.map(function (step, stepIndex) {
           var state = index === null ? 'future' : (stepIndex < index ? 'done' : (stepIndex === index ? 'active' : 'future'));
-          if (step.id.indexOf('figma_') === 0 && !connection && (index === null || stepIndex >= Math.max(index, 0))) {
-            state = 'blocked';
-          }
+          if (step.id === 'figma_ready' && index === 1) state = 'waiting';
+          if (step.id === 'figma_approved' && index === 2 && !proof) state = 'blocked';
           return el('span', { class: 'step-chip', text: String(stepIndex + 1) + ' · ' + step.label, data: { state: state } });
         });
         var body = [
@@ -1407,7 +1415,7 @@
             kv('ID', id || 'неизвестно', true),
             kv('Текущий шаг', current ? current.label : 'неизвестно'),
             kv('Индекс шага', index === null ? 'неизвестно' : String(index), true),
-            kv('Соединение Figma', connection === null ? 'неизвестно' : (connection ? 'подтверждено' : 'не подтверждено')),
+            kv('Синхронизация Figma', proof ? 'сохранена (MCP)' : (index >= 2 ? 'не сохранена' : 'ожидается')),
             kv('Обновлено', firstDefined(design, ['updatedAt']) || 'неизвестно', true)
           ])
         ];
@@ -1415,39 +1423,54 @@
         var nextId = expectedDesignStep(design);
         if (index === null) {
           body.push(el('p', { class: 'action-note', text: 'Текущий шаг неизвестен: переход заблокирован, чтобы не пропустить подтверждения человека.' }));
+        } else if (nextId === 'figma_ready') {
+          body.push(el('p', { class: 'action-note', text: 'Ожидание синхронизации из Codex. Шаг figma_ready выполняется действием design.figma.sync (CLI), ручной ввод отключён.' }));
+        } else if (proof && index >= 2) {
+          body.push(el('div', { class: 'history-entry' }, [
+            el('p', { class: 'card-text', text: 'Сохранённая синхронизация Figma (Codex):' }),
+            kvGrid([
+              kv('Ключ файла', firstDefined(proof, ['fileKey']) || 'неизвестно', true),
+              kv('Проверка', 'подтверждена', true)
+            ]),
+            linkRow('Файл Figma', firstDefined(proof, ['fileUrl', 'artifact'])),
+            renderSyncFrames(firstDefined(proof, ['frames'])) || null
+          ].filter(Boolean)));
+          if (index === 2) {
+            var approveForm = el('form', { class: 'inline-form', attrs: { 'data-action-form': 'design-advance', 'data-id': id, 'data-step': 'figma_approved' } }, [
+              formField('Примечание (необязательно)', controlTextarea('design-note-' + id, 'note', 'design:' + id + ':note', '', 2, 'Явное решение человека'), true)
+            ]);
+            approveForm.appendChild(el('div', { class: 'form-actions' }, [
+              el('button', { class: 'btn btn-primary btn-small', text: 'Подтвердить Figma (второе решение)', attrs: { type: 'submit' } }),
+              el('p', { class: 'hint', text: 'Отправка формы фиксирует явное решение человека; примечание необязательно.' })
+            ]));
+            body.push(approveForm);
+          }
+        } else if (index === 2 && !proof) {
+          body.push(el('p', { class: 'action-note', text: 'Ожидание синхронизации из Codex. Подтверждение Figma станет доступно после сохранённой синхронизации (design.figma.sync).' }));
         } else if (!nextId) {
           body.push(el('p', { class: 'action-note', text: 'Все шаги пройдены. Дальнейших автоматических действий нет.' }));
         } else {
           var next = DESIGN_STEPS[indexOfStep(nextId)];
-          var reason = designBlockReason(project, design, nextId);
-          if (reason) {
-            body.push(el('p', { class: 'action-note', text: reason }));
-          } else {
-            var labels = designStepFields(nextId);
-            var fields = [
-              formField(labels[0], controlTextarea('design-artifact-' + id, 'artifact', 'design:' + id + ':artifact',
-                '', 2, nextId === 'figma_ready' ? 'https://www.figma.com/file/…' : 'Ссылка или путь'), true)
-            ];
-            if (nextId === 'figma_ready') {
-              fields.push(formField('Фреймы (по строке)', controlTextarea('design-frames-' + id, 'frames', 'design:' + id + ':frames',
-                '', 3, 'Frame 01\nFrame 02'), true));
-            }
-            fields.push(formField(labels[1], controlTextarea('design-note-' + id, 'note', 'design:' + id + ':note',
-              '', 2, 'Явное основание шага'), true));
-            var form = el('form', { class: 'inline-form', attrs: { 'data-action-form': 'design-advance', 'data-id': id, 'data-step': nextId } }, fields);
-            var submit = el('button', {
-              class: 'btn btn-primary btn-small',
-              text: 'Перейти: ' + next.label,
-              attrs: { type: 'submit' }
-            });
-            form.appendChild(el('div', { class: 'form-actions' }, [
-              submit,
-              el('p', { class: 'hint', text: HUMAN_DESIGN_STEPS.indexOf(nextId) !== -1
-                ? 'Отправка формы фиксирует явное решение человека; примечание необязательно.'
-                : 'Шаг сохраняется только после явной отправки формы.' })
-            ]));
-            body.push(form);
+          var labels = designStepFields(nextId);
+          var isHumanDesignStep = HUMAN_DESIGN_STEPS.indexOf(nextId) !== -1;
+          var fields = [];
+          if (!isHumanDesignStep) {
+            fields.push(formField(labels[0], controlTextarea('design-artifact-' + id, 'artifact', 'design:' + id + ':artifact',
+              '', 2, 'Ссылка или путь'), true));
           }
+          fields.push(formField(labels[1] || 'Примечание (необязательно)', controlTextarea('design-note-' + id, 'note', 'design:' + id + ':note',
+            '', 2, isHumanDesignStep ? 'Явное решение человека' : 'Основание шага'), true));
+          var form = el('form', { class: 'inline-form', attrs: { 'data-action-form': 'design-advance', 'data-id': id, 'data-step': nextId } }, fields);
+          var buttonLabel = isHumanDesignStep
+            ? (nextId === 'references_approved' ? 'Принять источники (первое решение)' : 'Подтвердить: ' + next.label)
+            : 'Перейти: ' + next.label;
+          form.appendChild(el('div', { class: 'form-actions' }, [
+            el('button', { class: 'btn btn-primary btn-small', text: buttonLabel, attrs: { type: 'submit' } }),
+            el('p', { class: 'hint', text: isHumanDesignStep
+              ? 'Отправка формы фиксирует явное решение человека; примечание необязательно.'
+              : 'Шаг сохраняется только после явной отправки формы.' })
+          ]));
+          body.push(form);
         }
 
         body.push(el('section', { class: 'history-section' }, [
@@ -1455,15 +1478,14 @@
           designHistoryBlock(design)
         ]));
 
-        pieces.push(el('article', { class: 'card' }, [
+        return el('article', { class: 'card' }, [
           el('div', { class: 'card-head' }, [
             el('h3', { text: text(firstDefined(design, ['title', 'name']), 'Дизайн без названия') }),
             badge(current ? current.label : 'шаг неизвестно', current ? 'active' : 'unknown')
           ]),
           el('div', { class: 'card-body' }, body)
-        ]));
+        ]);
       });
-      return pieces;
     });
   }
 
@@ -1842,16 +1864,15 @@
       }
       var artifact = formValue(form, 'artifact');
       var note = formValue(form, 'note');
-      var frames = step === 'figma_ready' ? parseList(formValue(form, 'frames')) : [];
-      var problem = validateAdvance(step, artifact, note, frames, project, design);
+      var problem = validateAdvance(step, artifact, note, [], project, design);
       if (problem) { notify(problem, 'error'); return; }
-      var payload = { action: 'design.advance', id: designId, step: step, artifact: artifact, note: note };
-      if (frames.length) {
-        // Store ждёт frames отдельным массивом; в истории остаётся артефакт и примечание со списком.
-        payload.frames = frames;
-        payload.note = note ? note + '\nФреймы: ' + frames.join(', ') : 'Фреймы: ' + frames.join(', ');
-      }
-      sendAction(payload, button, 'Шаг дизайна сохранён.');
+      var payload = { action: 'design.advance', id: designId, step: step };
+      if (artifact) payload.artifact = artifact;
+      if (note) payload.note = note;
+      var success = (step === 'references_approved' || step === 'figma_approved')
+        ? 'Решение сохранено.'
+        : 'Шаг дизайна сохранён.';
+      sendAction(payload, button, success);
     }
   }
 

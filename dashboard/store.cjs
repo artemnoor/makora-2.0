@@ -563,6 +563,7 @@ class Store {
       case 'lab.decide': result = this.labDecide(payload, actor); break;
       case 'lab.configure': result = this.labConfigure(payload, actor); break;
       case 'design.create': result = this.designCreate(payload, actor); break;
+      case 'design.figma.sync': result = this.designFigmaSync(payload, actor); break;
       case 'design.advance': result = this.designAdvance(payload, actor, ctx); break;
       default:
         fail(`Неизвестное действие «${action}».`, 'action.unknown', { action });
@@ -971,6 +972,124 @@ class Store {
     return { ok: true, projectId: project.id, designId: id, idempotent: false };
   }
 
+  normalizeFigmaSyncPayload(payload) {
+    const fileKey = text(payload.fileKey, 'ключ файла Figma', { max: 500 });
+    if (!/^[A-Za-z0-9_-]+$/.test(fileKey)) {
+      fail('Ключ файла Figma недопустим для канонической ссылки.', 'design.figma_filekey_invalid', { field: 'fileKey' });
+    }
+    if (!Array.isArray(payload.frames)) {
+      fail('Поле «frames» должно быть массивом объектов {nodeId, name}.', 'field.type', { field: 'frames' });
+    }
+    if (!payload.frames.length) {
+      fail('Укажите хотя бы один фрейм в поле «frames».', 'field.required', { field: 'frames' });
+    }
+    const seen = new Set();
+    const frames = payload.frames.map((item, index) => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) {
+        fail(`Элемент frames[${index}] должен быть объектом {nodeId, name}.`, 'field.type', { field: 'frames' });
+      }
+      if (typeof item.nodeId !== 'string' || typeof item.name !== 'string') {
+        fail(`Элемент frames[${index}] должен содержать строки nodeId и name.`, 'field.type', { field: 'frames' });
+      }
+      const rawNodeId = item.nodeId.trim();
+      const name = item.name.trim();
+      if (!rawNodeId || !name) {
+        fail(`Элемент frames[${index}] должен содержать непустые nodeId и name.`, 'field.required', { field: 'frames' });
+      }
+      if (!/^\d+[:-]\d+$/.test(rawNodeId)) {
+        fail(`Идентификатор фрейма «${rawNodeId}» недопустим: ожидается числовая пара (например 12:34 или 12-34).`, 'design.figma_nodeid_invalid', { field: 'frames', nodeId: rawNodeId });
+      }
+      const nodeId = rawNodeId.replace(/-/g, ':');
+      if (seen.has(nodeId)) {
+        fail(`Повторяющийся идентификатор фрейма «${nodeId}».`, 'design.figma_duplicate_frame', { nodeId });
+      }
+      seen.add(nodeId);
+      const fileUrl = `https://www.figma.com/design/${fileKey}`;
+      return {
+        nodeId,
+        name,
+        url: `${fileUrl}?node-id=${encodeURIComponent(nodeId)}`,
+      };
+    });
+    const note = optionalText(payload.note, 'примечание', 20000);
+    return {
+      fileKey,
+      fileUrl: `https://www.figma.com/design/${fileKey}`,
+      frames,
+      note,
+    };
+  }
+
+  designFigmaSync(payload, actor) {
+    if (actor !== 'cli') {
+      fail('Синхронизацию Figma выполняет локальный CLI (Codex), а не браузер.', 'cli_required', { action: 'design.figma.sync' });
+    }
+    const project = this.getProject(payload.projectId);
+    const id = text(payload.id, 'идентификатор проекта проектирования', { max: 200 });
+    const design = this.db.prepare('SELECT * FROM designs WHERE id = ? AND project_id = ?').get(id, project.id);
+    if (!design) fail(`Проект проектирования ${id} не найден.`, 'design.not_found', { id });
+    const refsIndex = DESIGN_STEPS.indexOf('references_approved');
+    const figmaReadyIndex = DESIGN_STEPS.indexOf('figma_ready');
+    const figmaApprovedIndex = DESIGN_STEPS.indexOf('figma_approved');
+    if (design.step_index < refsIndex) {
+      fail('Синхронизация Figma доступна только после принятия источников (references_approved).',
+        'design.figma_sync_requires_references', { id, current: design.step });
+    }
+    if (design.step_index >= figmaApprovedIndex) {
+      fail('Нельзя изменять дизайн после подтверждения Figma (figma_approved).',
+        'design.figma_sync_blocked', { id, current: design.step });
+    }
+    const sync = this.normalizeFigmaSyncPayload(payload);
+    const history = parseJson(design.history, []);
+    const entry = {
+      step: 'figma_ready',
+      artifact: sync.fileUrl,
+      fileKey: sync.fileKey,
+      fileUrl: sync.fileUrl,
+      frames: sync.frames,
+      verified: true,
+      note: sync.note,
+      ts: this.now(),
+      source: 'figma-mcp',
+    };
+    const comparable = (item) => ({
+      step: item.step,
+      artifact: item.artifact ?? null,
+      fileKey: item.fileKey ?? null,
+      fileUrl: item.fileUrl ?? null,
+      frames: item.frames ?? [],
+      verified: Boolean(item.verified),
+      note: item.note ?? null,
+      source: item.source ?? null,
+    });
+    if (design.step_index === figmaReadyIndex) {
+      const lastEntry = history.length ? history[history.length - 1] : null;
+      if (lastEntry && lastEntry.step === 'figma_ready' &&
+          JSON.stringify(comparable(lastEntry)) === JSON.stringify(comparable(entry))) {
+        this.audit(project.id, 'design.figma.sync', actor, { id, fileKey: sync.fileKey }, true);
+        return { ok: true, projectId: project.id, designId: id, step: 'figma_ready', idempotent: true };
+      }
+      this.transaction(() => {
+        const nextHistory = history.slice();
+        if (nextHistory.length && nextHistory[nextHistory.length - 1].step === 'figma_ready') {
+          nextHistory[nextHistory.length - 1] = entry;
+        } else {
+          nextHistory.push(entry);
+        }
+        this.db.prepare('UPDATE designs SET step = ?, step_index = ?, history = ?, updated_at = ? WHERE id = ?')
+          .run('figma_ready', figmaReadyIndex, JSON.stringify(nextHistory), this.now(), id);
+        this.audit(project.id, 'design.figma.sync', actor, { id, fileKey: sync.fileKey, frames: sync.frames.length, updated: true });
+      });
+      return { ok: true, projectId: project.id, designId: id, step: 'figma_ready', idempotent: false, updated: true };
+    }
+    this.transaction(() => {
+      this.db.prepare('UPDATE designs SET step = ?, step_index = ?, history = ?, updated_at = ? WHERE id = ?')
+        .run('figma_ready', figmaReadyIndex, JSON.stringify([...history, entry]), this.now(), id);
+      this.audit(project.id, 'design.figma.sync', actor, { id, fileKey: sync.fileKey, frames: sync.frames.length });
+    });
+    return { ok: true, projectId: project.id, designId: id, step: 'figma_ready', idempotent: false };
+  }
+
   designAdvance(payload, actor, ctx) {
     const project = this.getProject(payload.projectId);
     const step = text(payload.step, 'шаг проектирования', { max: 60 });
@@ -981,10 +1100,9 @@ class Store {
     const design = this.db.prepare('SELECT * FROM designs WHERE id = ? AND project_id = ?').get(id, project.id);
     if (!design) fail(`Проект проектирования ${id} не найден.`, 'design.not_found', { id });
     const index = DESIGN_STEPS.indexOf(step);
-    if (step.startsWith('figma_') && !ctx.figmaConnected) {
-      this.audit(project.id, 'design.figma.blocked', actor, { id, step });
-      fail('Соединение с Figma не подключено. Шаг figma_ready заблокирован: подключите Figma и внесите ссылку на файл со списком фреймов. Другие шаги доступны.',
-        'design.figma_disconnected', { id, step, next: 'Подключите Figma, затем повторите шаг figma_ready' });
+    if (step === 'figma_ready') {
+      fail('Шаг figma_ready выполняется только через синхронизацию Figma из Codex (design.figma.sync).',
+        'design.figma_sync_required', { id, step });
     }
     if (HUMAN_DESIGN_STEPS.has(step) && actor !== 'browser') {
       fail(`Шаг «${step}» требует решения человека в браузере. Откройте панель и подтвердите шаг из интерфейса.`,
@@ -993,9 +1111,7 @@ class Store {
     const history = parseJson(design.history, []);
     const artifact = optionalText(payload.artifact, 'артефакт', 20000);
     const note = optionalText(payload.note, 'примечание', 20000);
-    // Фронтенд посылает фреймы отдельным полем: проверяем тип и сохраняем их
-    // в истории шага, чтобы список пережил перезапуск сервера.
-    const frames = step === 'figma_ready' ? strList(payload.frames, 'фреймы') : [];
+    const frames = [];
     const lastEntry = history.length ? history[history.length - 1] : null;
     const same = lastEntry && lastEntry.step === step &&
       (lastEntry.artifact ?? null) === artifact && (lastEntry.note ?? null) === note &&
@@ -1011,9 +1127,18 @@ class Store {
         : 'Все шаги проектирования уже пройдены.',
       'design.sequence', { id, current: design.step, expected, requested: step });
     }
+    if (step === 'figma_approved') {
+      const proof = history.length ? history[history.length - 1] : null;
+      const hasMcpSync = proof && proof.step === 'figma_ready' && proof.source === 'figma-mcp' &&
+        proof.verified === true && typeof proof.fileKey === 'string' && proof.fileKey &&
+        Array.isArray(proof.frames) && proof.frames.length > 0;
+      if (!hasMcpSync) {
+        fail('Подтверждение Figma доступно только после сохранённой синхронизации из Codex (design.figma.sync).',
+          'design.figma_sync_required', { id, step });
+      }
+    }
     this.validateDesignArtifact(step, artifact, note, frames);
     const entry = { step, artifact, note, ts: this.now(), source: actor };
-    if (step === 'figma_ready') entry.frames = frames;
     this.transaction(() => {
       this.db.prepare('UPDATE designs SET step = ?, step_index = ?, history = ?, updated_at = ? WHERE id = ?')
         .run(step, index, JSON.stringify([...history, entry]), this.now(), id);
@@ -1030,15 +1155,6 @@ class Store {
     if (step === 'references_ready') {
       requireArtifact('Укажите ссылки на источники в поле artifact.');
       if (!looksLikeLink(artifact)) fail('В artifact должны быть ссылки на источники (http(s):// или путь к файлу).', 'design.references_invalid', { step });
-    }
-    if (step === 'figma_ready') {
-      requireArtifact('Укажите ссылку на Figma и фреймы в поле artifact.');
-      if (!/https?:\/\/(?:www\.)?figma\.com\//i.test(artifact)) {
-        fail('В artifact нужна ссылка на файл Figma (figma.com).', 'design.figma_link_required', { step });
-      }
-      if (!frames.length && !/frame|фрейм/i.test(artifact)) {
-        fail('Укажите список фреймов: поле frames или упоминание фреймов в artifact.', 'design.frames_required', { step });
-      }
     }
     if (step === 'implemented') requireArtifact('Шаг implemented требует артефакта реализации в поле artifact.');
     if (step === 'reviewed') requireArtifact('Шаг reviewed требует доказательства проверки в поле artifact.');

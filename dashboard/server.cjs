@@ -41,12 +41,10 @@ function resolveConfig(options = {}) {
     throw new Error('DASHBOARD_PORT должен быть целым числом от 0 до 65535.');
   }
   const dataDir = path.resolve(options.dataDir || process.env.DASHBOARD_DATA_DIR || path.join(__dirname, 'data'));
-  const figmaConnected = options.figmaConnected ?? (process.env.DASHBOARD_FIGMA_CONNECTED === '1');
   return {
     port,
     dataDir,
     host: '127.0.0.1',
-    figmaConnected: Boolean(figmaConnected),
     runRoot: path.resolve(options.runRoot || defaultRunRoot()),
     observer: options.observer || null,
     readyTimeoutMs: options.readyTimeoutMs,
@@ -123,6 +121,13 @@ function isHumanActor(req) {
 }
 
 function checkHumanDecision(req, payload) {
+  if (payload.action === 'design.figma.sync' && isHumanActor(req)) {
+    throw new ActionError(
+      'Синхронизацию Figma выполняет локальный CLI (Codex), а не браузер.',
+      'cli_required',
+      { action: payload.action }
+    );
+  }
   if (!requiresBrowser(payload)) return;
   if (!isHumanActor(req)) {
     throw new ActionError(
@@ -199,7 +204,6 @@ const INDEX_HTML = `<!doctype html>
 <header class="top">
   <h1>Панель проектов</h1>
   <p class="lead">Панель ведёт учёт фаз, задач, идей, лабораторий и проектирования. Она не изменяет исходный код и не запускает агентов OpenCode.</p>
-  <div id="figmaBanner" class="banner" hidden></div>
 </header>
 <main>
   <section class="card">
@@ -369,17 +373,62 @@ function renderLabs(project) {
     '<div class="row"><button type="submit">Предложить лабораторию</button></div></form>' +
     (items ? '<ul class="list">' + items + '</ul>' : '<p class="subtle">Лабораторий пока нет.</p>') + '</section>';
 }
+function designSyncProof(design) {
+  if (!design || !Array.isArray(design.history)) return null;
+  for (let i = design.history.length - 1; i >= 0; i -= 1) {
+    const entry = design.history[i];
+    if (!entry || entry.step !== 'figma_ready') continue;
+    if (entry.source !== 'figma-mcp' || entry.verified !== true) continue;
+    if (!Array.isArray(entry.frames) || !entry.frames.length) continue;
+    return entry;
+  }
+  return null;
+}
+function renderFigmaProof(proof) {
+  if (!proof) return '';
+  const fileUrl = typeof (proof.fileUrl || proof.artifact) === 'string' ? (proof.fileUrl || proof.artifact) : '';
+  const fileKey = typeof proof.fileKey === 'string' ? proof.fileKey : '';
+  let out = '<div class="meta"><strong>Сохранённая синхронизация Figma (Codex):</strong></div>';
+  if (fileUrl) out += '<div class="meta">Файл: <a href="' + esc(fileUrl) + '" target="_blank" rel="noopener noreferrer">' + esc(fileUrl) + '</a>' + (fileKey ? ' <span class="badge">fileKey: ' + esc(fileKey) + '</span>' : '') + '</div>';
+  out += '<ul class="list">';
+  for (const frame of proof.frames) {
+    if (!frame || typeof frame !== 'object') continue;
+    const name = frame.name || '';
+    const nodeId = frame.nodeId || '';
+    const url = typeof frame.url === 'string' ? frame.url : '';
+    out += '<li class="item"><strong>' + esc(name) + '</strong> <span class="meta">nodeId: ' + esc(nodeId) + '</span>' +
+      (url ? '<div class="meta"><a href="' + esc(url) + '" target="_blank" rel="noopener noreferrer">' + esc(url) + '</a></div>' : '') + '</li>';
+  }
+  out += '</ul>';
+  return out;
+}
 function renderDesign(design, project) {
   const next = design.nextStep;
+  const proof = designSyncProof(design);
   let advance = '<p class="subtle">Все шаги пройдены.</p>';
-  if (next) {
-    advance = '<form data-action="design.advance" class="grid">' +
+  if (next === 'figma_ready') {
+    advance = '<p class="subtle">Ожидание синхронизации из Codex (design.figma.sync). Ручной ввод отключён.</p>';
+  } else if (design.step === 'figma_ready' && proof) {
+    advance = renderFigmaProof(proof) +
+      '<form data-action="design.advance" class="grid">' +
+      '<input type="hidden" name="projectId" value="' + esc(project.id) + '"><input type="hidden" name="id" value="' + esc(design.id) + '">' +
+      '<input type="hidden" name="step" value="figma_approved">' +
+      '<div><strong>Второе решение человека:</strong> подтвердить Figma <span class="badge warn">решение человека в браузере</span></div>' +
+      '<label>Примечание<input name="note"></label>' +
+      '<div class="row"><button type="submit">Подтвердить Figma (figma_approved)</button></div></form>';
+  } else if (design.step === 'figma_ready' && !proof) {
+    advance = '<p class="subtle">Ожидание синхронизации из Codex (design.figma.sync). Подтверждение Figma станет доступно после сохранённой синхронизации.</p>';
+  } else if (next) {
+    const savedProof = proof && ['figma_approved', 'implemented', 'reviewed'].includes(design.step) ? renderFigmaProof(proof) : '';
+    advance = savedProof + '<form data-action="design.advance" class="grid">' +
       '<input type="hidden" name="projectId" value="' + esc(project.id) + '"><input type="hidden" name="id" value="' + esc(design.id) + '">' +
       '<input type="hidden" name="step" value="' + esc(next) + '">' +
       '<div><span class="subtle">Следующий шаг: </span><strong>' + esc(next) + '</strong>' + (HUMAN_STEPS.has(next) ? ' <span class="badge warn">решение человека в браузере</span>' : '') + '</div>' +
-      '<label>Артефакт / ссылка / доказательство<textarea name="artifact"></textarea></label>' +
-      '<label>Примечание<input name="note"></label>' + (next === 'figma_ready' ? '<label>Фреймы<input name="frames"></label>' : '') +
-      '<div class="row"><button type="submit">Продвинуть шаг</button></div></form>';
+      (HUMAN_STEPS.has(next) ? '' : '<label>Артефакт / ссылка / доказательство<textarea name="artifact"></textarea></label>') +
+      '<label>Примечание<input name="note"></label>' +
+      '<div class="row"><button type="submit">' + (HUMAN_STEPS.has(next) ? 'Подтвердить (' + esc(next) + ')' : 'Продвинуть шаг') + '</button></div></form>';
+  } else if (proof) {
+    advance = renderFigmaProof(proof) + '<p class="subtle">Все шаги пройдены.</p>';
   }
   return '<li class="item"><strong>' + esc(design.title) + '</strong> ' + badge(design.step ? 'шаг: ' + design.step : 'создано') +
     '<div class="meta">' + esc((design.history || []).map((h) => h.step).join(' → ') || 'шаги ещё не начинались') + '</div>' + advance + '</li>';
@@ -411,11 +460,6 @@ function render(project) {
 }
 async function refresh() {
   const state = await (await fetch('/api/state')).json();
-  const banner = document.getElementById('figmaBanner');
-  if (state.figmaConnected === false) {
-    banner.hidden = false;
-    banner.textContent = 'Соединение с Figma не подключено: шаги figma_ready и figma_approved заблокированы.';
-  } else { banner.hidden = true; banner.textContent = ''; }
   document.getElementById('projects').innerHTML = state.projects.length
     ? state.projects.map(render).join('')
     : '<p class="subtle">Проектов пока нет. Зарегистрируйте каталог проекта выше.</p>';
@@ -500,7 +544,7 @@ function createDashboard(options = {}) {
         }
         if (pathname === '/api/state') {
           const state = store.getState({ observer, runRoot: config.runRoot });
-          sendJson(res, 200, { figmaConnected: config.figmaConnected, ...state });
+          sendJson(res, 200, state);
           return;
         }
         if (pathname === '/api/audit') {
@@ -535,7 +579,7 @@ function createDashboard(options = {}) {
         }
         checkHumanDecision(req, payload);
         const actor = isHumanActor(req) ? 'browser' : 'cli';
-        const ctx = { actor, figmaConnected: config.figmaConnected, runRoot: config.runRoot };
+        const ctx = { actor, runRoot: config.runRoot };
         let result;
         switch (payload.action) {
           case 'lab.start': {

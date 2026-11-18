@@ -157,41 +157,43 @@ test('SQLite сохраняет состояние, канонический п�
   }
 });
 
-test('дизайн: последовательные шаги, блок Figma и решения человека', async () => {
-  await withDashboard({ figmaConnected: false }, async ({ post, browser, addProject }) => {
+test('дизайн: полный путь через CLI-синхронизацию Figma и решения человека', async () => {
+  await withDashboard({}, async ({ post, browser, addProject }) => {
     const projectId = await addProject();
-    let result = await post({ action: 'design.create', projectId, title: 'Интерфейс' });
-    const designId = result.json.designId;
+    const designId = (await post({ action: 'design.create', projectId, title: 'Интерфейс' })).json.designId;
     assert.ok(designId);
-    result = await post({ action: 'design.advance', projectId, id: designId, step: DESIGN_STEPS[0], artifact: 'https://example.com/spec' });
-    assert.equal(result.json.ok, true);
-    result = await post({ action: 'design.advance', projectId, id: designId, step: 'figma_ready', artifact: 'https://www.figma.com/file/abc/Proj', frames: ['Frame 1'] });
-    assert.equal(result.json.code, 'design.figma_disconnected');
-    assert.match(result.json.error, /Figma/i);
+
+    let result = await post({ action: 'design.advance', projectId, id: designId, step: 'references_ready', artifact: 'https://example.com/spec' });
+    assert.equal(result.json.ok, true, JSON.stringify(result.json));
+
+    result = await post({ action: 'design.advance', projectId, id: designId, step: 'figma_ready', artifact: 'https://www.figma.com/design/x/F', frames: [{ nodeId: '1:2', name: 'Main' }] });
+    assert.equal(result.json.code, 'design.figma_sync_required', JSON.stringify(result.json));
+
     result = await post({ action: 'design.advance', projectId, id: designId, step: 'references_approved' });
     assert.equal(result.json.code, 'browser_required');
     result = await post({ action: 'design.advance', projectId, id: designId, step: 'references_approved' }, browser);
-    assert.equal(result.json.ok, true);
-  });
+    assert.equal(result.json.ok, true, JSON.stringify(result.json));
 
-  await withDashboard({ figmaConnected: true }, async ({ post, browser, addProject }) => {
-    const projectId = await addProject();
-    const designId = (await post({ action: 'design.create', projectId, title: 'Интерфейс' })).json.designId;
-    let result = await post({ action: 'design.advance', projectId, id: designId, step: 'figma_ready', artifact: 'https://www.figma.com/file/x/F' });
-    assert.equal(result.json.code, 'design.sequence');
-    const sequence = [
-      ['references_ready', { artifact: 'https://example.com/spec' }],
-      ['references_approved', {}],
-      ['figma_ready', { artifact: 'https://www.figma.com/file/x/F', frames: ['Main', 'Mobile'] }],
-      ['figma_approved', {}],
-      ['implemented', { artifact: 'commit 1a2b3c' }],
-      ['reviewed', { artifact: 'https://example.com/review' }],
-    ];
-    for (const [step, params] of sequence) {
-      const headers = ['references_approved', 'figma_approved'].includes(step) ? browser : undefined;
-      result = await post({ action: 'design.advance', projectId, id: designId, step, ...params }, headers);
-      assert.equal(result.json.ok, true, `${step}: ${JSON.stringify(result.json)}`);
-    }
+    // sync из браузера запрещён (CLI-only)
+    result = await post({
+      action: 'design.figma.sync', projectId, id: designId, fileKey: 'abcDEF123',
+      frames: [{ nodeId: '10-2', name: 'Main' }],
+    }, browser);
+    assert.equal(result.json.code, 'cli_required', JSON.stringify(result.json));
+
+    result = await post({
+      action: 'design.figma.sync', projectId, id: designId, fileKey: 'abcDEF123',
+      frames: [{ nodeId: '10-2', name: 'Main' }, { nodeId: '3:4', name: 'Mobile' }], note: 'синхронизировано',
+    });
+    assert.equal(result.json.ok, true, JSON.stringify(result.json));
+    assert.equal(result.json.step, 'figma_ready');
+
+    result = await post({ action: 'design.advance', projectId, id: designId, step: 'figma_approved' }, browser);
+    assert.equal(result.json.ok, true, JSON.stringify(result.json));
+    result = await post({ action: 'design.advance', projectId, id: designId, step: 'implemented', artifact: 'commit 1a2b3c' });
+    assert.equal(result.json.ok, true, JSON.stringify(result.json));
+    result = await post({ action: 'design.advance', projectId, id: designId, step: 'reviewed', artifact: 'https://example.com/review' });
+    assert.equal(result.json.ok, true, JSON.stringify(result.json));
   });
 });
 
@@ -214,7 +216,8 @@ test('HTTP: loopback, Origin, same-origin для решений, размер JS
     result = await get('/api/state');
     assert.equal(result.status, 200);
     assert.equal(result.headers['access-control-allow-origin'], undefined);
-    assert.equal(result.json.figmaConnected, false);
+    assert.equal(result.json.figmaConnected, undefined);
+    assert.ok(!('figmaConnected' in result.json));
 
     result = await get('/');
     assert.equal(result.status, 200);
@@ -447,8 +450,8 @@ test('Store открывается с node:sqlite и хранит решения
   }
 });
 
-test('figma_ready: frames отдельным полем проверяются и сохраняются в истории после перезапуска', async () => {
-  const env = makeEnv({ figmaConnected: true });
+test('design.figma.sync: канонические ссылки, нормализация, валидация, идемпотентность и persistence', async () => {
+  const env = makeEnv();
   let app;
   try {
     app = env.create();
@@ -457,48 +460,173 @@ test('figma_ready: frames отдельным полем проверяются �
     const browser = { Origin: `http://127.0.0.1:${app.port}`, 'Sec-Fetch-Site': 'same-origin' };
     const projectId = (await post({ action: 'project.add', name: 'Проект', path: env.projectPath })).json.projectId;
     const designId = (await post({ action: 'design.create', projectId, title: 'Интерфейс' })).json.designId;
-    assert.equal((await post({
-      action: 'design.advance', projectId, id: designId,
-      step: 'references_ready', artifact: 'https://example.com/spec',
-    })).json.ok, true);
-    assert.equal((await post({
-      action: 'design.advance', projectId, id: designId,
-      step: 'references_approved', artifact: 'https://example.com/spec',
-    }, browser)).json.ok, true);
 
+    // без references_approved запрещено
     let result = await post({
-      action: 'design.advance', projectId, id: designId, step: 'figma_ready',
-      artifact: 'https://www.figma.com/file/x/F', frames: [1, 2],
+      action: 'design.figma.sync', projectId, id: designId, fileKey: 'abc123',
+      frames: [{ nodeId: '1:2', name: 'Main' }],
     });
-    assert.equal(result.json.code, 'field.type', JSON.stringify(result.json));
+    assert.equal(result.json.code, 'design.figma_sync_requires_references', JSON.stringify(result.json));
 
+    assert.equal((await post({ action: 'design.advance', projectId, id: designId, step: 'references_ready', artifact: 'https://example.com/spec' })).json.ok, true);
     result = await post({
-      action: 'design.advance', projectId, id: designId, step: 'figma_ready',
-      artifact: 'https://www.figma.com/file/x/F', frames: ['Main', 'Mobile'],
+      action: 'design.figma.sync', projectId, id: designId, fileKey: 'abc123',
+      frames: [{ nodeId: '1:2', name: 'Main' }],
+    });
+    assert.equal(result.json.code, 'design.figma_sync_requires_references', JSON.stringify(result.json));
+
+    assert.equal((await post({ action: 'design.advance', projectId, id: designId, step: 'references_approved' }, browser)).json.ok, true);
+
+    // валидация payload
+    for (const badKey of ['abc 123', 'abc/123', 'abc%20', 'abc\\def', 'abc.def', 'abc?x', 'abc#x', 'abc:123']) {
+      result = await post({ action: 'design.figma.sync', projectId, id: designId, fileKey: badKey, frames: [{ nodeId: '1:2', name: 'Main' }] });
+      assert.equal(result.json.code, 'design.figma_filekey_invalid', `${badKey}: ${JSON.stringify(result.json)}`);
+    }
+    result = await post({ action: 'design.figma.sync', projectId, id: designId, fileKey: 'abc123', frames: [] });
+    assert.equal(result.json.code, 'field.required', JSON.stringify(result.json));
+    result = await post({ action: 'design.figma.sync', projectId, id: designId, fileKey: 'abc123', frames: [{ nodeId: '1:2', name: '' }] });
+    assert.equal(result.json.code, 'field.required', JSON.stringify(result.json));
+    result = await post({ action: 'design.figma.sync', projectId, id: designId, fileKey: 'abc123', frames: ['Frame 1'] });
+    assert.equal(result.json.code, 'field.type', JSON.stringify(result.json));
+    for (const badNodeId of ['abc', 'https://figma.com/x', '1', '1:', ':2', '1:2:3', '1-2-3', '1.2', 'a:b', '1;2']) {
+      result = await post({ action: 'design.figma.sync', projectId, id: designId, fileKey: 'abc123', frames: [{ nodeId: badNodeId, name: 'Main' }] });
+      assert.equal(result.json.code, 'design.figma_nodeid_invalid', `${badNodeId}: ${JSON.stringify(result.json)}`);
+    }
+    result = await post({
+      action: 'design.figma.sync', projectId, id: designId, fileKey: 'abc123',
+      frames: [{ nodeId: '1-2', name: 'A' }, { nodeId: '1:2', name: 'B' }],
+    });
+    assert.equal(result.json.code, 'design.figma_duplicate_frame', JSON.stringify(result.json));
+
+    // успешная sync: нормализация - -> : и канонические ссылки формируются сервером
+    result = await post({
+      action: 'design.figma.sync', projectId, id: designId, fileKey: 'AbC123x',
+      frames: [{ nodeId: '10-2', name: 'Главный экран' }, { nodeId: '3:4', name: 'Мобайл' }],
+      note: 'проверено',
     });
     assert.equal(result.json.ok, true, JSON.stringify(result.json));
-    result = await post({
-      action: 'design.advance', projectId, id: designId, step: 'figma_ready',
-      artifact: 'https://www.figma.com/file/x/F', frames: ['Main', 'Mobile'],
-    });
-    assert.equal(result.json.idempotent, true);
+    assert.equal(result.json.idempotent, false);
 
     let state = (await request(app.port, { pathname: '/api/state' })).json;
-    let entry = state.projects[0].designs[0].history.find((item) => item.step === 'figma_ready');
-    assert.deepEqual(entry.frames, ['Main', 'Mobile']);
-    assert.equal(state.projects[0].designs[0].step, 'figma_ready');
-    await app.close();
+    let design = state.projects[0].designs[0];
+    assert.equal(design.step, 'figma_ready');
+    assert.equal(design.stepIndex, 2);
+    let entry = design.history[design.history.length - 1];
+    assert.equal(entry.step, 'figma_ready');
+    assert.equal(entry.source, 'figma-mcp');
+    assert.equal(entry.verified, true);
+    assert.equal(entry.fileKey, 'AbC123x');
+    assert.equal(entry.fileUrl, 'https://www.figma.com/design/AbC123x');
+    assert.equal(entry.artifact, 'https://www.figma.com/design/AbC123x');
+    assert.equal(entry.note, 'проверено');
+    assert.equal(entry.frames.length, 2);
+    assert.deepEqual(entry.frames[0], { nodeId: '10:2', name: 'Главный экран', url: 'https://www.figma.com/design/AbC123x?node-id=10%3A2' });
+    assert.deepEqual(entry.frames[1], { nodeId: '3:4', name: 'Мобайл', url: 'https://www.figma.com/design/AbC123x?node-id=3%3A4' });
 
+    // идемпотентность
+    result = await post({
+      action: 'design.figma.sync', projectId, id: designId, fileKey: 'AbC123x',
+      frames: [{ nodeId: '10-2', name: 'Главный экран' }, { nodeId: '3:4', name: 'Мобайл' }],
+      note: 'проверено',
+    });
+    assert.equal(result.json.idempotent, true, JSON.stringify(result.json));
+    state = (await request(app.port, { pathname: '/api/state' })).json;
+    assert.equal(state.projects[0].designs[0].history.filter((item) => item.step === 'figma_ready').length, 1);
+
+    // persistence
+    await app.close();
     app = env.create();
     await app.listen();
     state = (await request(app.port, { pathname: '/api/state' })).json;
-    entry = state.projects[0].designs[0].history.find((item) => item.step === 'figma_ready');
-    assert.deepEqual(entry.frames, ['Main', 'Mobile']);
-    assert.equal(entry.artifact, 'https://www.figma.com/file/x/F');
+    entry = state.projects[0].designs[0].history[state.projects[0].designs[0].history.length - 1];
+    assert.equal(entry.source, 'figma-mcp');
+    assert.equal(entry.verified, true);
+    assert.equal(entry.fileKey, 'AbC123x');
+    assert.deepEqual(entry.frames[0].url, 'https://www.figma.com/design/AbC123x?node-id=10%3A2');
   } finally {
     if (app) await app.close();
     env.cleanup();
   }
+});
+
+test('design.figma.sync: обновление ручного figma_ready и запреты после figma_approved', async () => {
+  await withDashboard({}, async ({ app, post, get, browser, addProject }) => {
+    const projectId = await addProject();
+    const designId = (await post({ action: 'design.create', projectId, title: 'Интерфейс' })).json.designId;
+    assert.equal((await post({ action: 'design.advance', projectId, id: designId, step: 'references_ready', artifact: 'https://example.com/spec' })).json.ok, true);
+    assert.equal((await post({ action: 'design.advance', projectId, id: designId, step: 'references_approved' }, browser)).json.ok, true);
+
+    // имитация исторического ручного figma_ready до внедрения MCP-sync
+    const ts = new Date().toISOString();
+    app.store.db.prepare('UPDATE designs SET step = ?, step_index = ?, history = ?, updated_at = ? WHERE id = ?')
+      .run('figma_ready', 2, JSON.stringify([
+        { step: 'references_ready', artifact: 'https://example.com/spec', note: null, ts, source: 'cli' },
+        { step: 'references_approved', artifact: null, note: null, ts, source: 'browser' },
+        { step: 'figma_ready', artifact: 'https://www.figma.com/file/old/Old', frames: ['Old frame'], note: null, ts, source: 'cli' },
+      ]), ts, designId);
+
+    // без sync подтверждение невозможно
+    let result = await post({ action: 'design.advance', projectId, id: designId, step: 'figma_approved' }, browser);
+    assert.equal(result.json.code, 'design.figma_sync_required', JSON.stringify(result.json));
+
+    // sync обновляет ручной figma_ready до подтверждения
+    result = await post({
+      action: 'design.figma.sync', projectId, id: designId, fileKey: 'NewKey',
+      frames: [{ nodeId: '7:8', name: 'Новый' }],
+    });
+    assert.equal(result.json.ok, true, JSON.stringify(result.json));
+    assert.equal(result.json.updated, true, JSON.stringify(result.json));
+    let state = (await get('/api/state')).json;
+    let design = state.projects[0].designs[0];
+    assert.equal(design.step, 'figma_ready');
+    assert.equal(design.history.filter((item) => item.step === 'figma_ready').length, 1);
+    const proof = design.history[design.history.length - 1];
+    assert.equal(proof.source, 'figma-mcp');
+    assert.equal(proof.fileKey, 'NewKey');
+    assert.equal(proof.frames[0].url, 'https://www.figma.com/design/NewKey?node-id=7%3A8');
+
+    result = await post({ action: 'design.advance', projectId, id: designId, step: 'figma_approved' }, browser);
+    assert.equal(result.json.ok, true, JSON.stringify(result.json));
+
+    // после figma_approved sync и изменения запрещены
+    result = await post({
+      action: 'design.figma.sync', projectId, id: designId, fileKey: 'Other',
+      frames: [{ nodeId: '1:1', name: 'X' }],
+    });
+    assert.equal(result.json.code, 'design.figma_sync_blocked', JSON.stringify(result.json));
+    result = await post({ action: 'design.advance', projectId, id: designId, step: 'implemented', artifact: 'commit' });
+    assert.equal(result.json.ok, true, JSON.stringify(result.json)); // implemented still allowed in sequence
+  });
+});
+
+test('дизайн: завершённые исторические записи читаются без миграции', async () => {
+  await withDashboard({}, async ({ app, get, addProject }) => {
+    const projectId = await addProject();
+    const ts = '2025-01-02T03:04:05.000Z';
+    const history = [
+      { step: 'references_ready', artifact: 'https://example.com/spec', note: null, ts, source: 'cli' },
+      { step: 'references_approved', artifact: null, note: 'ok', ts, source: 'browser' },
+      { step: 'figma_ready', artifact: 'https://www.figma.com/file/legacy/Old', frames: ['Main', 'Mobile'], note: null, ts, source: 'cli' },
+      { step: 'figma_approved', artifact: null, note: null, ts, source: 'browser' },
+      { step: 'implemented', artifact: 'commit abc', note: null, ts, source: 'cli' },
+      { step: 'reviewed', artifact: 'https://example.com/review', note: null, ts, source: 'cli' },
+    ];
+    app.store.db.prepare('INSERT INTO designs(id, project_id, title, step, step_index, history, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .run('design_legacy1', projectId, 'Старый дизайн', 'reviewed', 5, JSON.stringify(history), ts, ts);
+
+    const state = (await get('/api/state')).json;
+    const design = state.projects[0].designs.find((item) => item.id === 'design_legacy1');
+    assert.ok(design, 'legacy design must be present');
+    assert.equal(design.step, 'reviewed');
+    assert.equal(design.stepIndex, 5);
+    assert.equal(design.nextStep, null);
+    assert.equal(design.history.length, 6);
+    const legacyFigma = design.history.find((item) => item.step === 'figma_ready');
+    assert.deepEqual(legacyFigma.frames, ['Main', 'Mobile']);
+    assert.equal(legacyFigma.artifact, 'https://www.figma.com/file/legacy/Old');
+    // не MCP-доказательство, но запись читается как есть
+    assert.notEqual(legacyFigma.source, 'figma-mcp');
+  });
 });
 
 test('наблюдаемые запуски сохраняют данные исполнителя и обогащаются ссылкой задачи', async () => {

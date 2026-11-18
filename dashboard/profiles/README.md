@@ -27,3 +27,5 @@ node dashboard/control.cjs compile big-pickle ticket.json
 ```
 
 На выходе JSON с полями `profile`, `version`, `prompt`, `ticket`.
+
+Чтобы создать профиль для другой модели или обновить текущий, используй [model-prompt-profile](../../skills/model-prompt-profile/SKILL.md).
