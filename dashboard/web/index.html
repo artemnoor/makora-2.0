@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'">
+  <meta name="color-scheme" content="dark">
+  <title>Контрольная комната — контур поставки</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Перейти к содержимому</a>
+
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">CR</span>
+        <div>
+          <p class="eyebrow">Локальный контур · наблюдение и решения</p>
+          <h1>Контрольная комната</h1>
+        </div>
+      </div>
+      <div class="topbar-status" aria-label="Состояние подключения">
+        <span class="status-chip" id="apiStatus" data-state="loading">
+          <span class="led" aria-hidden="true"></span>
+          <span id="apiStatusText">Подключение…</span>
+        </span>
+        <span class="status-chip" id="figmaStatus" data-state="unknown">
+          <span class="led" aria-hidden="true"></span>
+          <span id="figmaStatusText">Figma: соединение неизвестно</span>
+        </span>
+        <span class="sync-time" id="syncTime">Обновление: —</span>
+      </div>
+    </header>
+
+    <main id="main">
+      <section class="panel project-bar" aria-labelledby="projectHeading">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Контекст</p>
+            <h2 id="projectHeading">Выбранный проект</h2>
+          </div>
+          <button type="button" class="btn btn-ghost" data-command="refresh" id="refreshBtn">Обновить состояние</button>
+        </div>
+
+        <div class="project-controls">
+          <div class="field field-grow">
+            <label for="projectSelect">Проект</label>
+            <select id="projectSelect" aria-describedby="projectSelectHint">
+              <option value="">Загрузка…</option>
+            </select>
+            <p class="hint" id="projectSelectHint">Список приходит из <code>/api/state</code>.</p>
+          </div>
+
+          <details class="disclosure">
+            <summary>Зарегистрировать проект</summary>
+            <form id="projectForm" class="disclosure-body form-grid" autocomplete="off">
+              <div class="field">
+                <label for="projectName">Название</label>
+                <input id="projectName" name="name" type="text" required placeholder="Например, модуль приёмки">
+              </div>
+              <div class="field">
+                <label for="projectPath">Путь к рабочей копии</label>
+                <input id="projectPath" name="path" type="text" required spellcheck="false" placeholder="C:\\work\\project">
+              </div>
+              <div class="form-actions">
+                <button type="submit" class="btn btn-primary">Добавить проект</button>
+              </div>
+            </form>
+          </details>
+        </div>
+
+        <div id="projectMeta" class="project-meta" aria-live="polite"></div>
+      </section>
+
+      <section class="panel route-panel" aria-labelledby="routeHeading">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Маршрут поставки</p>
+            <h2 id="routeHeading">Освещённый путь фаз</h2>
+          </div>
+          <p class="section-note">Нажмите на фазу, чтобы зафиксировать её через <code>project.phase</code>.</p>
+        </div>
+        <ol id="phasePath" class="phase-path" aria-label="Фазы проекта"></ol>
+        <div class="parallel-grid" id="parallelTracks" aria-label="Параллельные треки">
+          <article class="track track-frontend" data-track="frontend">
+            <div class="track-head">
+              <span class="track-index" aria-hidden="true">01</span>
+              <div>
+                <h3>Фронтенд</h3>
+                <p>Задачи интерфейса и их доказательства</p>
+              </div>
+            </div>
+            <div class="track-body" id="frontendTrackBody"></div>
+          </article>
+          <div class="track-connector" aria-hidden="true"><span></span></div>
+          <article class="track track-lab" data-track="lab">
+            <div class="track-head">
+              <span class="track-index" aria-hidden="true">02</span>
+              <div>
+                <h3>Лаборатория</h3>
+                <p>Гипотезы, демо и явная приёмка</p>
+              </div>
+            </div>
+            <div class="track-body" id="labTrackBody"></div>
+          </article>
+        </div>
+      </section>
+
+      <div class="workspace-grid">
+        <section class="panel tasks-panel" aria-labelledby="tasksHeading">
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">Исполнение</p>
+              <h2 id="tasksHeading">Задачи <span class="counter" id="taskCount">—</span></h2>
+            </div>
+          </div>
+
+          <div id="blockers" class="blockers" aria-label="Блокеры"></div>
+
+          <details class="disclosure task-disclosure">
+            <summary>Зафиксировать задачу <span class="muted">(task.put)</span></summary>
+            <form id="taskForm" class="disclosure-body form-grid" autocomplete="off">
+              <div class="field">
+                <label for="taskId">ID задачи</label>
+                <input id="taskId" name="id" type="text" required spellcheck="false">
+              </div>
+              <div class="field">
+                <label for="taskTitle">Заголовок</label>
+                <input id="taskTitle" name="title" type="text" required>
+              </div>
+              <div class="field">
+                <label for="taskStage">Этап / трек</label>
+                <input id="taskStage" name="stage" type="text" placeholder="frontend, api, lab…">
+              </div>
+              <div class="field">
+                <label for="taskStatus">Статус</label>
+                <select id="taskStatus" name="status" required>
+                  <option value="queued">в очереди</option>
+                  <option value="in_progress">в работе</option>
+                  <option value="blocked">заблокировано</option>
+                  <option value="done">завершено (приёмка отдельно)</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="taskAgent">Агент</label>
+                <input id="taskAgent" name="agent" type="text" spellcheck="false">
+              </div>
+              <div class="field">
+                <label for="taskModel">Модель</label>
+                <input id="taskModel" name="model" type="text" spellcheck="false">
+              </div>
+              <div class="field">
+                <label for="taskRunId">ID прогона</label>
+                <input id="taskRunId" name="runId" type="text" spellcheck="false">
+              </div>
+              <div class="field">
+                <label for="taskSessionId">ID сессии</label>
+                <input id="taskSessionId" name="sessionId" type="text" spellcheck="false">
+              </div>
+              <div class="field field-wide">
+                <label for="taskCriteria">Критерии (по строке)</label>
+                <textarea id="taskCriteria" name="criteria" rows="2"></textarea>
+              </div>
+              <div class="field field-wide">
+                <label for="taskEvidence">Доказательства (по строке)</label>
+                <textarea id="taskEvidence" name="evidence" rows="2"></textarea>
+              </div>
+              <div class="field field-wide">
+                <label for="taskDependsOn">Зависимости — ID через запятую или новую строку</label>
+                <input id="taskDependsOn" name="dependsOn" type="text" spellcheck="false">
+              </div>
+              <div class="form-actions field-wide">
+                <button type="submit" class="btn btn-primary">Сохранить задачу</button>
+              </div>
+            </form>
+          </details>
+
+          <div id="taskList" class="task-list" aria-label="Список задач"></div>
+        </section>
+
+        <aside class="panel decisions-panel" aria-labelledby="decisionsHeading">
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">Явные решения</p>
+              <h2 id="decisionsHeading">Журнал</h2>
+            </div>
+          </div>
+          <div id="decisionFeed" class="decision-feed" aria-live="polite"></div>
+        </aside>
+      </div>
+
+      <section class="panel tabs-section" aria-labelledby="tabsHeading">
+        <div class="section-head tabs-head">
+          <div>
+            <p class="eyebrow">Детали контура</p>
+            <h2 id="tabsHeading">Git, решения и артефакты</h2>
+          </div>
+          <div class="tablist" role="tablist" aria-label="Разделы">
+            <button type="button" role="tab" id="tab-git" aria-controls="panel-git" aria-selected="true" tabindex="0" data-tab="git">Git</button>
+            <button type="button" role="tab" id="tab-ideas" aria-controls="panel-ideas" aria-selected="false" tabindex="-1" data-tab="ideas">Идеи</button>
+            <button type="button" role="tab" id="tab-labs" aria-controls="panel-labs" aria-selected="false" tabindex="-1" data-tab="labs">Лаборатории</button>
+            <button type="button" role="tab" id="tab-design" aria-controls="panel-design" aria-selected="false" tabindex="-1" data-tab="design">Дизайн</button>
+          </div>
+        </div>
+
+        <div id="panel-git" role="tabpanel" aria-labelledby="tab-git" data-tab-panel="git">
+          <div class="tab-intro">
+            <p>Ветка, коммит, путь копии, идентификаторы воркера и сессии. Ссылки открываются только для Figma и локального предпросмотра.</p>
+          </div>
+          <div id="gitContent" class="dynamic-region"></div>
+        </div>
+
+        <div id="panel-ideas" role="tabpanel" aria-labelledby="tab-ideas" data-tab-panel="ideas" hidden>
+          <form id="ideaForm" class="editor-form" autocomplete="off">
+            <div class="editor-form-grid">
+              <div class="field field-wide">
+                <label for="ideaText">Идея</label>
+                <textarea id="ideaText" name="text" rows="2" required placeholder="Короткая формулировка"></textarea>
+              </div>
+              <div class="field">
+                <label for="ideaProposal">Предложение</label>
+                <input id="ideaProposal" name="proposal" type="text">
+              </div>
+              <div class="field">
+                <label for="ideaAfterTask">После задачи (ID)</label>
+                <input id="ideaAfterTask" name="afterTaskId" type="text" spellcheck="false">
+              </div>
+            </div>
+            <div class="form-actions">
+              <button type="submit" class="btn btn-primary">Добавить идею</button>
+              <p class="hint">Повтор текста в рамках проекта не создаёт новую запись.</p>
+            </div>
+          </form>
+          <div id="ideaList" class="dynamic-region"></div>
+        </div>
+
+        <div id="panel-labs" role="tabpanel" aria-labelledby="tab-labs" data-tab-panel="labs" hidden>
+          <form id="labForm" class="editor-form" autocomplete="off">
+            <div class="editor-form-grid">
+              <div class="field">
+                <label for="labTitle">Название</label>
+                <input id="labTitle" name="title" type="text" required>
+              </div>
+              <div class="field">
+                <label for="labProof">Доказательство (необязательно)</label>
+                <input id="labProof" name="proof" type="text">
+              </div>
+              <div class="field field-wide">
+                <label for="labScenario">Сценарий</label>
+                <textarea id="labScenario" name="scenario" rows="2" required></textarea>
+              </div>
+              <div class="field">
+                <label for="labCriteria">Критерии (по строке)</label>
+                <textarea id="labCriteria" name="criteria" rows="3"></textarea>
+              </div>
+              <div class="field">
+                <label for="labModulePaths">Модули (по строке)</label>
+                <textarea id="labModulePaths" name="modulePaths" rows="3" spellcheck="false"></textarea>
+              </div>
+              <div class="field">
+                <label for="labDemoPaths">Файлы демо (по строке)</label>
+                <textarea id="labDemoPaths" name="demoPaths" rows="3" spellcheck="false"></textarea>
+              </div>
+            </div>
+            <div class="form-actions">
+              <button type="submit" class="btn btn-primary">Предложить лабораторию</button>
+              <p class="hint">Порядок: предложение → одобрение → настройка демо → запуск → явная приёмка.</p>
+            </div>
+          </form>
+          <div id="labList" class="dynamic-region"></div>
+        </div>
+
+        <div id="panel-design" role="tabpanel" aria-labelledby="tab-design" data-tab-panel="design" hidden>
+          <form id="designForm" class="editor-form" autocomplete="off">
+            <div class="editor-form-grid">
+              <div class="field field-grow">
+                <label for="designTitle">Название проекта дизайна</label>
+                <input id="designTitle" name="title" type="text" required>
+              </div>
+            </div>
+            <div class="form-actions">
+              <button type="submit" class="btn btn-primary">Создать дизайн</button>
+              <p class="hint">Шаги идут только по порядку; подтверждения человека не заменяются статусом инструмента.</p>
+            </div>
+          </form>
+          <div id="designList" class="dynamic-region"></div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="app-footer">
+      <p>Дашборд не редактирует исходный код и не запускает или останавливает агентов OpenCode. Приёмка существует только как явное решение.</p>
+      <p class="mono">GET /api/state · POST /api/actions</p>
+    </footer>
+  </div>
+
+  <dialog id="detailDialog" class="detail-dialog" aria-labelledby="detailTitle">
+    <div class="dialog-head">
+      <div>
+        <p class="eyebrow" id="detailKind">Детали</p>
+        <h2 id="detailTitle">Запись</h2>
+      </div>
+      <button type="button" class="btn btn-ghost" data-command="close-detail">Закрыть</button>
+    </div>
+    <div id="detailBody" class="dialog-body"></div>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <script src="app.js"></script>
+</body>
+</html>
