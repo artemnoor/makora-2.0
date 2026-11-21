@@ -45,7 +45,8 @@
 Локальные тесты выполняются с тестовыми адаптерами.
 
 ```powershell
-node --test dashboard/core.test.cjs dashboard/adapters.test.cjs workers.scope.test.cjs workers.verified.test.cjs dashboard/recursive/recursive.test.cjs
+npm ci --ignore-scripts
+npm test
 ```
 
 Для отдельного сравнительного пилота фиксируются входной манифест, задачи, критерии, модель, бюджет и результаты проверок. Сначала сравниваются рекурсивный режим и E Verified Batch с одной и той же моделью. Для DeepSeek нужен отдельный утверждённый прогон с точным ID и профилем. Сопоставляются приёмка, активное время, число попыток и ревью, конфликты и подтверждённые затраты. Карта исследований и ограничений собрана в [каталоге источников](recursive-labs-sources.md).

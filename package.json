@@ -1,0 +1,9 @@
+{
+  "name": "makora-dashboard",
+  "private": true,
+  "scripts": {
+    "test": "node --test workers.scope.test.cjs workers.verified.test.cjs dashboard/core.test.cjs dashboard/adapters.test.cjs dashboard/outsource.test.cjs dashboard/recursive/recursive.test.cjs"
+  },
+  "engines": { "node": ">=22.13.0" },
+  "dependencies": { "yauzl": "3.4.0" }
+}

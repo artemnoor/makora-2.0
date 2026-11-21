@@ -15,6 +15,7 @@ tags: [makora, dashboard, api]
 | Git | Рабочие копии, наблюдаемые прогоны, сессии и сведения о сборках. |
 | Идеи | Исходный текст, предложенный момент реализации и решения по идеям. |
 | Лаборатории | Обычные демо-карточки и раздел рекурсивных планов при их наличии. |
+| Аутсорс | ТЗ и контракт OpenAPI, загрузка ZIP, приёмка и перенос результата. См. [[13 — Аутсорс модулей]]. |
 | Дизайн | Референсы, подтверждения, синхронизированные фреймы Figma и этапы реализации дизайна. |
 
 Браузер периодически запрашивает состояние сервера. Он показывает, какие команды доступны, а допустимость переходов окончательно проверяет сервер. Видимый статус OpenCode и приёмка задачи — отдельные поля.
@@ -30,6 +31,7 @@ tags: [makora, dashboard, api]
 | `GET /api/state` | Проекты и их текущее состояние. |
 | `GET /api/audit?projectId=…` | Записи аудита выбранного проекта. |
 | `POST /api/actions` | Локальные действия с JSON-телом. |
+| `/api/outsources/<projectId>/<id>/<resource>` | Скачивание ТЗ и OpenAPI, загрузка ZIP. |
 
 ```powershell
 node ./dashboard/control.cjs state
@@ -52,13 +54,14 @@ node ./dashboard/control.cjs action "<action.json>"
 | Дизайн | `design.create`, `design.advance`, `design.figma.sync` |
 | Рекурсивные планы | `plan.put`, `plan.draft`, `plan.start`, `plan.control`, `plan.revise` |
 | Ревью из чата | `plan.review.pending`, `plan.review.decide` |
+| Аутсорс | `outsource.create`, `outsource.accept`, `outsource.integrate` |
 
 ## Что хранится где
 
 | Источник | Роль |
 |---|---|
-| `DASHBOARD_DATA_DIR/dashboard.sqlite` | Основные таблицы `projects`, `tasks`, `ideas`, `labs`, `designs`, `runs`, `task_acceptances`, `decisions`, `audit`. |
-| Рекурсивные таблицы SQLite | `plans`, `work_nodes`, `node_dependencies`, `plan_runs`, `attempts`, `artifacts`, `reviews`. Текущая версия схемы — 2. |
+| `DASHBOARD_DATA_DIR/dashboard.sqlite` | Основные таблицы `projects`, `tasks`, `ideas`, `labs`, `designs`, `outsources`, `runs`, `task_acceptances`, `decisions`, `audit`. Текущая версия схемы — 3. |
+| Рекурсивные таблицы SQLite | `plans`, `work_nodes`, `node_dependencies`, `plan_runs`, `attempts`, `artifacts`, `reviews`. |
 | Каталог рабочих прогонов | Снимки, рабочие копии, манифесты, diff, журналы, файлы владения сессиями, результаты проверок и сборки. |
 | OpenCode Desktop | Исходные сессии моделей и их события. ID связывает сессию с локальными доказательствами Makora. |
 | Текущий чат | Постановка, анализ и смысловая интерпретация критериев. Решения, необходимые для следующего шага Makora, публикуются в её SQLite через API. |

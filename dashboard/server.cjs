@@ -10,6 +10,8 @@ const { Store, ActionError, PHASES, HUMAN_DESIGN_STEPS, makeLogger } = require('
 const { LabRunner, defaultRunRoot } = require('./labs.cjs');
 const { RecursiveRunner } = require('./recursive/runtime.cjs');
 const { PlanError } = require('./recursive/plan.cjs');
+const { ZIP_LIMIT, OutsourceError } = require('./outsource.cjs');
+const OUTSOURCE_ROUTE = /^\/api\/outsources\/([a-f0-9]{16})\/(outsource_[a-f0-9]{16})\/(brief|contract|archive)$/;
 
 const DEFAULT_PORT = 18741;
 const MAX_BODY_BYTES = 64 * 1024;
@@ -539,6 +541,29 @@ function createDashboard(options = {}) {
     try {
       checkRequestOrigin(req, config, server);
       pathname = new URL(req.url || '/', 'http://127.0.0.1').pathname;
+      const outsourceRoute = OUTSOURCE_ROUTE.exec(pathname);
+      if (outsourceRoute) {
+        const [, projectId, id, resource] = outsourceRoute;
+        if (req.method === 'GET' && resource !== 'archive') {
+          const brief = store.outsourceBrief(projectId, id);
+          const body = JSON.stringify(resource === 'contract' ? brief.openapi : brief, null, 2) + '\n';
+          send(res, 200, body, 'application/json; charset=utf-8', {
+            'Content-Disposition': 'attachment; filename="' + id + '-' + resource + '.json"',
+          });
+          return;
+        }
+        if (req.method === 'POST' && resource === 'archive') {
+          if (!/^application\/zip(?:\s*;|$)/i.test(req.headers['content-type'] || '')) {
+            throw new HttpError(415, 'Ожидается ZIP с Content-Type: application/zip.', 'content_type');
+          }
+          store.getOutsource(projectId, id);
+          const buffer = await readBody(req, ZIP_LIMIT);
+          const result = await store.outsourceImport(projectId, id, buffer, isHumanActor(req) ? 'browser' : 'cli');
+          sendJson(res, 200, result);
+          return;
+        }
+        throw new HttpError(405, 'Метод не поддерживается.', 'method_not_allowed');
+      }
       if (req.method === 'GET') {
         if (pathname === '/' || pathname === '/index.html') {
           send(res, 200, assetBody('index.html', INDEX_HTML), 'text/html; charset=utf-8');
@@ -642,7 +667,7 @@ function createDashboard(options = {}) {
       throw new HttpError(405, 'Метод не поддерживается.', 'method_not_allowed');
     } catch (error) {
       if (res.headersSent) return;
-      if (error instanceof HttpError) {
+      if (error instanceof HttpError || error instanceof OutsourceError) {
         sendJson(res, error.status, { error: error.message, code: error.code });
         return;
       }

@@ -186,3 +186,5 @@ textarea { resize: vertical; }
   .phase-button { padding-inline: 7px; }
   .form-grid, .editor-form-grid, .inline-form, .parallel-grid { grid-template-columns: minmax(0,1fr); }
 }
+
+.outsource-hash { overflow-wrap: anywhere; }

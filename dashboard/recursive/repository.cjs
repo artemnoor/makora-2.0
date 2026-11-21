@@ -3,7 +3,6 @@
 const { randomUUID } = require('node:crypto');
 const { PlanError, requirePlan, normalizePlan, draftPlan, changedScope } = require('./plan.cjs');
 
-const VERSION = 2;
 const ACTIVE = ['running', 'paused', 'cancelling', 'unknown', 'budget_exhausted', 'attention'];
 const schema = 'CREATE TABLE IF NOT EXISTS plans ('
   + ' project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, plan_id TEXT NOT NULL, revision INTEGER NOT NULL,'
@@ -41,7 +40,6 @@ class RecursiveRepository {
 
   migrate() {
     this.db.exec(schema);
-    this.db.exec('PRAGMA user_version = ' + VERSION);
   }
 
   plan(projectId, planId, revision) {
@@ -200,4 +198,4 @@ class RecursiveRepository {
   }
 }
 
-module.exports = { RecursiveRepository, VERSION, ACTIVE };
+module.exports = { RecursiveRepository, ACTIVE };
