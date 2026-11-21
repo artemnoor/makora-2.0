@@ -90,7 +90,10 @@ function writeManifest(run, manifest) {
 function createRun(project, workerNames, requestedMode) {
   const source = fs.realpathSync.native(project);
   if (!fs.statSync(source).isDirectory()) throw new Error("Project must be a directory");
-  const runRoot = path.join(process.env.LOCALAPPDATA, "Codex", "OpenCode workers");
+  const managed = process.env.MAKORA_BATCH_DIRECTORY;
+  const runRoot = managed
+    ? require("./dashboard/recursive/artifacts.cjs").realDirectory(managed)
+    : path.join(process.env.LOCALAPPDATA, "Codex", "OpenCode workers");
   const resolved = path.relative(source, runRoot);
   if (!path.isAbsolute(resolved) && !resolved.startsWith(".." + path.sep) && resolved !== "..") {
     throw new Error("The project must not contain the worker storage directory");
@@ -98,6 +101,9 @@ function createRun(project, workerNames, requestedMode) {
   const workspace = detectWorkspace(source);
   const mode = resolveWorkspaceMode(requestedMode, workspace);
   checkDesktopService(openCode(), source, "start");
+  if (managed) {
+    require("./dashboard/recursive/opencode.cjs").createOpenCodeClient().preflight(source);
+  }
   fs.mkdirSync(runRoot, { recursive: true });
   const run = fs.mkdtempSync(path.join(runRoot, "run-"));
   const baseline = path.join(run, "baseline");
@@ -157,6 +163,9 @@ function prepare(project, workerNames) {
 }
 
 function openCode() {
+  if (process.env.MAKORA_BATCH_DIRECTORY) {
+    return require("./dashboard/recursive/opencode.cjs").createOpenCodeClient().binary;
+  }
   const root = path.join(process.env.APPDATA, "ai.opencode.desktop", "cli");
   const executable = fs.readdirSync(root)
     .filter((name) => name.endsWith("-x64") && fs.existsSync(path.join(root, name, "opencode-cli.exe")))
@@ -204,8 +213,18 @@ function runWorker(run, name, model, promptFile, agent = DEFAULT_AGENT, timeout)
     console.log(JSON.stringify({ directory, log, model, agent }));
     const options = { cwd: directory, stdio: ["ignore", handle, handle], windowsHide: true, env: workerEnvironment() };
     if (timeout !== undefined) options.timeout = Number(timeout);
+    const managed = process.env.MAKORA_BATCH_DIRECTORY;
+    const sessionArgs = [];
+    if (managed) {
+      const cancellation = path.join(managed, "cancel.json");
+      if (fs.existsSync(cancellation)) throw new Error("Managed batch was cancelled before dispatch");
+      const client = require("./dashboard/recursive/opencode.cjs").createOpenCodeClient({ binary: cli });
+      const owner = client.reserve(directory, model, path.join(run, name + ".ownership.json"));
+      if (fs.existsSync(cancellation)) throw new Error("Managed batch was cancelled before dispatch");
+      sessionArgs.push("--session", owner.id);
+    }
     const result = spawnSync(cli, [
-      "run", "--model", model, "--agent", "build", "--format", "json",
+      "run", ...sessionArgs, "--model", model, "--agent", "build", "--format", "json",
       "--title", "Codex worker: " + name, prompt,
     ], options);
     if (result.error?.code === "ETIMEDOUT") throw new Error("Worker CLI timed out");
@@ -586,6 +605,16 @@ async function verifyWorker(record, context, cli, suffix = "") {
     return worker;
   }
   if (record.exitCode !== 0) {
+    if (process.env.MAKORA_BATCH_DIRECTORY) {
+      const { events } = readLogEvents(logPath);
+      const limited = events.find((event) => event.type === "error" && event.error?.status === 429);
+      if (limited) {
+        const delay = limited.error.retryAfterMs;
+        worker.reason = "OpenCode provider rate limit (429)" +
+          (Number.isFinite(delay) && delay > 0 ? `; retry after ${Math.ceil(delay / 60000)} min` : "");
+        return worker;
+      }
+    }
     const tail = oneLine(tailFile(record.processLog, 500));
     worker.reason = `worker CLI exited with ${record.exitCode ?? record.signalCode ?? "unknown"}` +
       (tail ? ": " + truncate(tail, 200) : "");
@@ -601,6 +630,14 @@ async function verifyWorker(record, context, cli, suffix = "") {
   if (!parent.id) {
     worker.reason = "parent session id not found in worker log";
     return worker;
+  }
+  if (process.env.MAKORA_BATCH_DIRECTORY) {
+    const ownerPath = path.join(context.run, record.spec.name + ".ownership.json");
+    const owner = JSON.parse(fs.readFileSync(ownerPath, "utf8"));
+    if (owner.id !== parent.id || owner.model !== record.spec.model) {
+      worker.reason = "Parent session does not match the managed ownership record";
+      return worker;
+    }
   }
   const childIDs = findChildSessionIDs(events).filter((id) => id !== parent.id);
   worker.childIDCount = childIDs.length;
@@ -820,6 +857,10 @@ async function batch(project, planFile) {
     specs = plan.specs;
     workspaceMode = plan.workspace;
     context = createRun(project, specs.map((spec) => spec.name), workspaceMode);
+    if (process.env.MAKORA_BATCH_DIRECTORY) {
+      fs.writeFileSync(path.join(process.env.MAKORA_BATCH_DIRECTORY, "managed-run.json"),
+        JSON.stringify({ run: context.run, source: context.source }), { flag: "wx" });
+    }
   } catch (error) {
     console.log(JSON.stringify({
       status: "invalid",

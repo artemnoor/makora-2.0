@@ -8,6 +8,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { Store, ActionError, PHASES, HUMAN_DESIGN_STEPS, makeLogger } = require('./store.cjs');
 const { LabRunner, defaultRunRoot } = require('./labs.cjs');
+const { RecursiveRunner } = require('./recursive/runtime.cjs');
+const { PlanError } = require('./recursive/plan.cjs');
 
 const DEFAULT_PORT = 18741;
 const MAX_BODY_BYTES = 64 * 1024;
@@ -41,6 +43,8 @@ function resolveConfig(options = {}) {
     throw new Error('DASHBOARD_PORT должен быть целым числом от 0 до 65535.');
   }
   const dataDir = path.resolve(options.dataDir || process.env.DASHBOARD_DATA_DIR || path.join(__dirname, 'data'));
+  const configFile = process.env.MAKORA_RECURSIVE_CONFIG;
+  if (configFile && !path.isAbsolute(configFile)) throw new Error('MAKORA_RECURSIVE_CONFIG должен быть абсолютным путём.');
   return {
     port,
     dataDir,
@@ -54,6 +58,7 @@ function resolveConfig(options = {}) {
     net: options.net,
     executables: options.executables,
     verifyWorktree: options.verifyWorktree,
+    recursive: options.recursive ?? (configFile ? JSON.parse(fs.readFileSync(configFile, 'utf8').replace(/^\uFEFF/, '')) : null),
   };
 }
 
@@ -112,6 +117,7 @@ function requiresBrowser(payload) {
   // источника. Настройка демо (lab.configure) остаётся доступной локальному CLI.
   if (payload.action === 'idea.decide' || payload.action === 'lab.decide') return true;
   if (payload.action === 'lab.start' || payload.action === 'lab.stop') return true;
+  if (payload.action === 'plan.start' || payload.action === 'plan.control') return true;
   if (payload.action === 'design.advance' && HUMAN_DESIGN_STEPS.has(payload.step)) return true;
   return false;
 }
@@ -523,6 +529,10 @@ function createDashboard(options = {}) {
     verifyWorktree: config.verifyWorktree,
   });
   const observer = loadObserver(config.observer);
+  const recursive = new RecursiveRunner({ repository: store.recursive, config: config.recursive,
+    execution: options.recursiveExecution, reviewer: options.recursiveReviewer, logger: log });
+  const readState = () => ({ ...store.getState({ observer, runRoot: config.runRoot }),
+    recursive: { enabled: recursive.enabled } });
 
   const server = http.createServer(async (req, res) => {
     let pathname = '/';
@@ -543,7 +553,7 @@ function createDashboard(options = {}) {
           return;
         }
         if (pathname === '/api/state') {
-          const state = store.getState({ observer, runRoot: config.runRoot });
+          const state = readState();
           sendJson(res, 200, state);
           return;
         }
@@ -582,6 +592,11 @@ function createDashboard(options = {}) {
         const ctx = { actor, runRoot: config.runRoot };
         let result;
         switch (payload.action) {
+          case 'plan.start': result = recursive.start(payload, actor); break;
+          case 'plan.control': result = recursive.control(payload, actor); break;
+          case 'plan.revise': result = recursive.revise(payload, actor); break;
+          case 'plan.review.pending': result = recursive.sessionReview(payload, actor); break;
+          case 'plan.review.decide': result = recursive.sessionReview(payload, actor, true); break;
           case 'lab.start': {
             const pre = store.labStartPrepare(payload, actor);
             try {
@@ -635,6 +650,10 @@ function createDashboard(options = {}) {
         sendJson(res, 200, error.toJSON());
         return;
       }
+      if (error instanceof PlanError) {
+        sendJson(res, 200, { ok: false, code: error.code, error: error.message });
+        return;
+      }
       log('error', 'request failed', { pathname, error: error.message });
       sendJson(res, 500, { error: `Внутренняя ошибка панели: ${error.message}`, code: 'internal' });
     }
@@ -644,6 +663,7 @@ function createDashboard(options = {}) {
     server,
     store,
     labs,
+    recursive,
     config,
     listen(port = config.port, host = config.host) {
       return new Promise((resolve, reject) => {
@@ -651,6 +671,7 @@ function createDashboard(options = {}) {
         const onListening = () => {
           server.off('error', onError);
           log('info', 'dashboard listening', { host, port: effectivePort(config, server) });
+          recursive.listen();
           resolve(server.address());
         };
         server.once('error', onError);
@@ -659,8 +680,9 @@ function createDashboard(options = {}) {
       });
     },
     get port() { return effectivePort(config, server); },
-    getState() { return store.getState({ observer, runRoot: config.runRoot }); },
+    getState() { return readState(); },
     async close() {
+      recursive.close();
       await labs.close();
       if (server.listening) {
         await new Promise((resolve) => server.close(() => resolve()));

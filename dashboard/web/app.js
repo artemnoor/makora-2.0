@@ -79,17 +79,17 @@
   var renderSig = Object.create(null);
   var toastTimer = null;
   var loadPromise = null;
-  var activeTab = 'git';
+  var activeTab = 'overview';
 
   function byId(id) { return document.getElementById(id); }
 
   function cacheRefs() {
     [
       'apiStatus', 'apiStatusText', 'figmaStatus', 'figmaStatusText', 'syncTime',
-      'projectSelect', 'projectForm', 'projectMeta', 'refreshBtn', 'taskForm',
+      'projectSelect', 'projectForm', 'projectMeta', 'projectHeading', 'currentPhase', 'refreshBtn', 'taskForm',
       'phasePath', 'frontendTrackBody', 'labTrackBody', 'blockers', 'taskList',
       'taskCount', 'decisionFeed', 'gitContent', 'ideaForm', 'ideaList',
-      'labForm', 'labList', 'designForm', 'designList', 'detailDialog',
+      'labForm', 'labList', 'recursivePlans', 'designForm', 'designList', 'detailDialog',
       'detailKind', 'detailTitle', 'detailBody', 'toast'
     ].forEach(function (id) { refs[id] = byId(id); });
   }
@@ -512,6 +512,7 @@
       tasks: arrayOf(source.tasks),
       ideas: arrayOf(source.ideas),
       labs: arrayOf(source.labs),
+      recursivePlans: arrayOf(source.recursivePlans),
       designs: arrayOf(source.designs),
       runs: arrayOf(source.runs),
       decisions: arrayOf(source.decisions)
@@ -646,19 +647,14 @@
 
   function renderProjectMeta() {
     var project = selectedProject();
-    if (!project) {
-      refs.projectMeta.replaceChildren(emptyState('Проект не выбран', 'Зарегистрируйте проект или дождитесь ответа /api/state.'));
-      return;
-    }
-    var phaseIndex = PHASES.findIndex(function (phase) { return phase.id === lower(project.phase); });
-    refs.projectMeta.replaceChildren(fragment([
-      metaCell('Название', project.name),
-      metaCell('Путь копии', project.path || 'неизвестно', true, Boolean(project.path)),
-      metaCell('Фаза', phaseIndex === -1 ? 'неизвестно' : PHASES[phaseIndex].label),
-      metaCell('Состав', 'задач ' + project.tasks.length + ' · идей ' + project.ideas.length +
-        ' · лабораторий ' + project.labs.length + ' · дизайнов ' + project.designs.length +
-        ' · прогонов ' + project.runs.length)
-    ]));
+    var phase = project && PHASES.find(function (entry) { return entry.id === lower(project.phase); });
+    refs.projectHeading.textContent = project ? project.name : 'Проекты';
+    refs.currentPhase.textContent = phase ? phase.label : '';
+    var stamp = project ? project.id + ':' + project.path : 'none';
+    renderRegion('project-meta', refs.projectMeta, stamp, function () {
+      if (!project) return [];
+      return metaCell('Рабочая папка', project.path, true, Boolean(project.path));
+    });
   }
 
   function renderPhases() {
@@ -673,11 +669,11 @@
         var button = el('button', {
           class: 'phase-button',
           attrs: { type: 'button', 'data-command': 'set-phase', 'data-phase': phase.id,
-            title: 'Зафиксировать фазу: ' + phase.label }
+            title: 'Зафиксировать фазу: ' + phase.label, 'aria-current': state === 'active' ? 'step' : 'false',
+            'aria-label': phase.label + ', ' + stateText }
         }, [
-          el('span', { class: 'phase-num', text: String(index + 1).padStart(2, '0') }),
-          el('span', { class: 'phase-label', text: phase.label }),
-          el('span', { class: 'phase-state', text: stateText })
+          el('span', { class: 'phase-num', text: String(index + 1) + '.' }),
+          el('span', { class: 'phase-label', text: phase.label })
         ]);
         return el('li', { class: 'phase-step', data: { state: state } }, button);
       });
@@ -806,23 +802,24 @@
     });
 
     project.designs.forEach(function (design) {
+      var title = text(design.title, 'Дизайн');
       var index = designStepIndex(design);
       if (index === null) {
-        result.push({ title: 'Дизайн ' + (idOf(design) || 'без ID') + ': шаг неизвестен', text: 'Шаг не распознан, переход заблокирован.', tab: 'design' });
+        result.push({ title: title, text: 'Шаг не распознан, переход заблокирован.', tab: 'design' });
         return;
       }
       var step = DESIGN_STEPS[index + 1];
       if (!step) return;
       if (step.id === 'figma_ready') {
-        result.push({ title: 'Дизайн ' + (idOf(design) || 'без ID') + ': ожидание синхронизации Figma', text: 'Синхронизация выполняется из Codex (design.figma.sync).', tab: 'design' });
+        result.push({ title: title, text: 'Ожидает синхронизации Figma', tab: 'design' });
       } else if (step.id === 'figma_approved') {
         if (designSyncProof(design)) {
-          result.push({ title: 'Дизайн ' + (idOf(design) || 'без ID') + ': нужно решение человека', text: 'Следующий шаг: ' + step.label + '.', tab: 'design' });
+          result.push({ title: title, text: step.id === 'references_approved' ? 'Ожидает согласования референсов' : (step.id === 'figma_approved' ? 'Ожидает утверждения макета' : 'Ожидает проверки'), tab: 'design' });
         } else {
-          result.push({ title: 'Дизайн ' + (idOf(design) || 'без ID') + ': требуется синхронизация Figma', text: 'Подтверждение доступно после сохранённой синхронизации из Codex.', tab: 'design' });
+          result.push({ title: title, text: 'Подтверждение доступно после сохранённой синхронизации из Codex.', tab: 'design' });
         }
       } else if (HUMAN_DESIGN_STEPS.indexOf(step.id) !== -1 || step.id === 'reviewed') {
-        result.push({ title: 'Дизайн ' + (idOf(design) || 'без ID') + ': нужно решение человека', text: 'Следующий шаг: ' + step.label + '.', tab: 'design' });
+        result.push({ title: title, text: step.id === 'references_approved' ? 'Ожидает согласования референсов' : (step.id === 'figma_approved' ? 'Ожидает утверждения макета' : 'Ожидает проверки'), tab: 'design' });
       }
     });
 
@@ -841,7 +838,7 @@
     var items = buildBlockers(project);
     var stamp = project ? project.id + ':' + JSON.stringify(items) : 'none';
     renderRegion('blockers', refs.blockers, stamp, function () {
-      if (!items.length) return emptyState('Активных блокеров нет', 'Основание: только явные статусы и решения из /api/state.');
+      if (!items.length) return el('p', { class: 'muted', text: 'Нет ожидающих решений' });
       var shown = items.slice(0, 8).map(function (item) {
         var content = [
           el('span', { class: 'blocker-dot', attrs: { 'aria-hidden': 'true' } }),
@@ -872,30 +869,25 @@
     var stamp = project ? project.id + ':' + JSON.stringify([project.tasks, project.decisions]) : 'none';
     renderRegion('tasks', refs.taskList, stamp, function () {
       if (!project) return emptyState('Нет задач', 'Выберите проект.');
-      if (!project.tasks.length) return emptyState('Задачи не зафиксированы', 'Добавьте задачу через форму task.put.');
+      if (!project.tasks.length) return emptyState('Задач пока нет', 'Добавьте первую задачу.');
       return project.tasks.map(function (task) {
         var status = firstDefined(task, ['status', 'state']);
         var decision = decisionOf(project, task);
-        var stage = firstDefined(task, ['stage', 'track', 'lane']);
-        var meta = [];
-        if (stage) meta.push(badge(String(stage), 'neutral'));
-        meta.push(badge(statusLabel(status, decision === 'accepted'), statusTone(status, decision === 'accepted')));
-        if (decision) meta.push(badge('решение: ' + DECISION_LABELS[decision], decision));
-        if (firstDefined(task, ['agent'])) meta.push(el('span', { class: 'task-row-id', text: 'агент: ' + text(task.agent) }));
-        if (firstDefined(task, ['model'])) meta.push(el('span', { class: 'task-row-id', text: 'модель: ' + text(task.model) }));
-        if (firstDefined(task, ['sessionId'])) meta.push(el('span', { class: 'task-row-id', text: 'сессия: ' + text(task.sessionId) }));
         return el('button', {
           class: 'task-row',
           attrs: { type: 'button', 'data-command': 'open-task', 'data-id': idOf(task) }
         }, [
-          el('span', {}, [
-            el('span', { class: 'task-row-title', text: text(firstDefined(task, ['title', 'name']), 'Задача без названия') }),
-            el('span', { class: 'task-row-id', text: 'ID: ' + (idOf(task) || 'неизвестно') })
+          el('span', { class: 'task-row-main' }, [
+            el('span', { class: 'task-row-head' }, [
+              el('span', { class: 'task-row-id', text: idOf(task) || 'Без ID' }),
+              el('span', { class: 'task-row-title', text: text(firstDefined(task, ['title', 'name']), 'Задача без названия') })
+            ]),
+            el('span', { class: 'task-row-meta' }, [
+              badge(decision === 'accepted' ? 'Принято' : statusLabel(status, false), statusTone(status, decision === 'accepted')),
+              firstDefined(task, ['model']) ? el('span', { class: 'task-row-id', text: text(task.model) }) : null
+            ].filter(Boolean))
           ]),
-          el('span', { class: 'task-row-side' }, [
-            el('span', { class: 'task-row-meta' }, meta),
-            el('span', { class: 'task-row-id', text: 'Детали →' })
-          ])
+          el('span', { class: 'task-row-arrow', text: '›', attrs: { 'aria-hidden': 'true' } })
         ]);
       });
     });
@@ -1490,7 +1482,7 @@
   }
 
   function detailSection(title, nodes) {
-    return el('section', { class: 'dialog-section' }, [el('h3', { text: title })].concat((nodes || []).filter(Boolean)));
+    return el('section', { class: 'dialog-section' }, [el('h3', { text: title }), nodes]);
   }
 
   function openTaskDetail(id) {
@@ -1622,6 +1614,89 @@
     toastTimer = window.setTimeout(function () { refs.toast.hidden = true; }, kind === 'error' ? 7000 : 4200);
   }
 
+  function renderRecursivePlans() {
+    var project = selectedProject();
+    var settings = (view.raw && view.raw.recursive) || {};
+    var plans = project ? project.recursivePlans : [];
+    var labels = {
+      approved: 'Одобрено', queued: 'В очереди', planning: 'Ожидает дочерние задачи', executing: 'Исполняется',
+      running: 'В работе', integrating: 'Интеграция', executor_verified: 'Исполнитель проверен',
+      tests_passed: 'Проверки пройдены', reviewing: 'На ревью', accepted: 'Принято', paused: 'На паузе',
+      cancelling: 'Отменяется', cancelled: 'Отменено', failed: 'Ошибка', rejected: 'Отклонено',
+      invalidated: 'Входные данные устарели', changes_requested: 'Нужны правки', unknown: 'Требуется сверка сессий',
+      attention: 'Требует внимания', budget_exhausted: 'Лимит исчерпан'
+    };
+    renderRegion('recursive-plans', refs.recursivePlans, JSON.stringify([project && project.id, settings, plans]), function () {
+      if (!plans.length) return [];
+      var openNodes = new Set(Array.from(refs.recursivePlans.querySelectorAll('details[data-recursive-node][open]'))
+        .map(function (details) { return details.dataset.recursiveNode; }));
+      return [el('h2', { text: 'Рекурсивные лаборатории' })].concat(plans.map(function (plan) {
+        var run = plan.run;
+        var nodes = Object.create(null);
+        plan.nodes.forEach(function (node) { nodes[node.id] = []; });
+        plan.nodes.forEach(function (node) { if (node.parentId) nodes[node.parentId].push(node); });
+        function tree(node) {
+          var state = run && run.nodes[node.id];
+          var caption = node.title + (state ? ' · ' + (labels[state.state] || state.state) : '');
+          var checks = node.checks.map(function (check) { return check.executable + ' ' + JSON.stringify(check.args); });
+          var info = [linesBlock('Критерии', node.criteria), linesBlock('Проверки', checks)];
+          if (node.model) info.push(kvGrid([kv('Модель', node.model, true), kv('Зона записи', node.writeScope.join(', '), true)]));
+          if (node.goal) info.push(el('p', { text: node.goal }));
+          if (node.contract) info.push(el('p', { text: node.contract }));
+          if (node.dependsOn.length) info.push(linesBlock('Зависимости', node.dependsOn));
+          if (state && state.provisionalInputs.length) info.push(el('p', { text: 'Предварительные входы · ' + state.provisionalInputs.length }));
+          if (state && state.reason) info.push(el('p', { class: 'action-note', text: state.reason }));
+          if (nodes[node.id].length) info.push(el('ul', {}, nodes[node.id].map(tree)));
+          var key = project.id + '/' + plan.id + '/' + node.id;
+          return el('li', {}, el('details', { attrs: { 'data-recursive-node': key, open: openNodes.has(key) } },
+            [el('summary', { text: caption })].concat(info)));
+        }
+        function control(command, label) {
+          return el('button', { class: 'btn btn-ghost btn-small', text: label, attrs: {
+            type: 'button', 'data-command': 'recursive-control', 'data-id': run.id, 'data-operation': command
+          } });
+        }
+        var actions = [];
+        var latestFinished = !run || ['accepted', 'cancelled'].includes(run.status);
+        if (settings.enabled && latestFinished && (!run || plan.revision > run.revision)) {
+          actions.push(el('button', { class: 'btn btn-emerald btn-small', text: 'Утвердить и запустить', attrs: {
+            type: 'button', 'data-command': 'recursive-start', 'data-id': plan.id,
+            'data-revision': String(plan.revision), 'data-fingerprint': plan.fingerprint
+          } }));
+        } else if (run && !latestFinished) {
+          if (run.status === 'running') actions.push(control('pause', 'Пауза'));
+          if (['paused', 'unknown', 'attention'].includes(run.status)) actions.push(control('resume', 'Продолжить'));
+          if (run.status !== 'cancelling') actions.push(control('cancel', 'Отменить'));
+        }
+        var body = [el('h3', { text: plan.title }),
+          el('p', { text: 'Ревизия ' + plan.revision + ' · ' + (run ? (labels[run.status] || run.status) : 'Черновик') }),
+          el('p', { text: plan.requirements })];
+        if (run && run.reason) body.push(el('p', { class: 'action-note', text: run.reason }));
+        if (run && run.result) body.push(kvGrid([kv('Принятая сборка', run.result.directory, true), kv('SHA-256 сборки', run.result.assemblyHash, true)]));
+        if (run && run.evidence.some(function (entry) { return entry.channel === 'session' && entry.status === 'claimed'; })) {
+          body.push(el('p', { class: 'action-note', text: 'Ожидается решение из чата Codex.' }));
+        }
+        body.push(el('p', { text: 'Исполнители ' + plan.limits.parallel + ' · Узлы ' + (run ? run.budget.nodes : plan.nodes.length) + '/' + plan.limits.nodes +
+          ' · Попытки ' + (run ? run.budget.attempts : 0) + '/' + plan.limits.attempts + ' · Ревью ' + (run ? run.budget.reviews : 0) + '/' + plan.limits.reviews +
+          ' · Проверки ' + (run ? run.budget.checks : 0) + '/' + plan.limits.checks }));
+        if (run) body.push(el('details', {}, [el('summary', { text: 'Бюджет и доказательства' }), kvGrid([
+          kv('Активное время', Math.round(run.budget.activeMs / 60000) + ' / ' + Math.round(plan.limits.activeMs / 60000) + ' мин'),
+          kv('Перепланирования', run.budget.replans + ' / ' + plan.limits.replans),
+          kv('Интеграции', run.budget.integrations + ' / ' + plan.limits.integrations),
+          kv('Токены', run.budget.tokens == null ? 'неизвестно' : run.budget.tokens),
+          kv('Стоимость', run.budget.costMicros == null ? 'неизвестно' : (run.budget.costMicros / 1000000).toFixed(6) + ' USD')
+        ]), run.baseline && linesBlock('Локальные изменения снимка', Object.keys(run.baseline.edits).map(function (relative) {
+          return relative + ' · ' + (run.baseline.edits[relative] || 'файл отсутствует или исключён');
+        })), linesBlock('Попытки', run.evidence.map(function (attempt) {
+          return [attempt.kind, attempt.status, attempt.runId || attempt.id, attempt.reason].filter(Boolean).join(' · ');
+        }))]));
+        body.push(el('ul', {}, [tree(plan.nodes.find(function (node) { return node.id === plan.rootId; }))]));
+        if (actions.length) body.push(el('div', { class: 'action-row' }, actions));
+        return el('article', { class: 'card' }, body);
+      }));
+    });
+  }
+
   function renderAll() {
     renderStatus();
     renderProjectOptions();
@@ -1634,6 +1709,7 @@
     renderGit();
     renderIdeas();
     renderLabs();
+    renderRecursivePlans();
     renderDesigns();
   }
 
@@ -1887,10 +1963,33 @@
 
     if (command === 'refresh') { loadState(); return; }
     if (command === 'copy') { copyText(button.dataset.copy, button); return; }
-    if (command === 'goto-tab') { setTab(button.dataset.tab); return; }
+    if (command === 'goto-tab') {
+      setTab(button.dataset.tab);
+      var targetTab = byId('tab-' + button.dataset.tab);
+      if (targetTab) targetTab.focus();
+      return;
+    }
     if (command === 'close-detail') { refs.detailDialog.close(); return; }
     if (command === 'open-task') { openTaskDetail(id); return; }
     if (command === 'open-run') { openRunDetail(id); return; }
+
+    if (command === 'recursive-start' || command === 'recursive-control') {
+      if (!project) return;
+      if (command === 'recursive-start') {
+        sendAction({ action: 'plan.start', id: button.dataset.id, revision: Number(button.dataset.revision),
+          fingerprint: button.dataset.fingerprint }, button, 'План принят к исполнению.');
+      } else {
+        sendAction({ action: 'plan.control', runId: id, command: button.dataset.operation }, button, 'Команда сохранена.');
+      }
+      return;
+    }
+
+    if (command === 'toggle-phases') {
+      var expanded = refs.phasePath.classList.toggle('phases-expanded');
+      button.setAttribute('aria-expanded', String(expanded));
+      button.textContent = expanded ? 'Свернуть' : 'Все этапы';
+      return;
+    }
 
     if (command === 'set-phase') {
       if (!project) { notify('Выберите проект.', 'error'); return; }
@@ -1974,7 +2073,7 @@
   function init() {
     cacheRefs();
     bindEvents();
-    setTab('git');
+    setTab(activeTab);
     renderAll();
     pollLoop();
   }

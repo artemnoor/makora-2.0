@@ -7,6 +7,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
+const { RecursiveRepository, VERSION: RECURSIVE_SCHEMA_VERSION } = require('./recursive/repository.cjs');
 
 const PHASES = ['brief', 'architecture', 'scaffold', 'implementation', 'assembly', 'acceptance', 'complete'];
 const DESIGN_STEPS = [
@@ -199,12 +200,17 @@ class Store {
     this.log('debug', 'opening sqlite', { path: this.dbPath });
     this.db = new DatabaseSync(this.dbPath);
     this.db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
-    this.migrate();
+    this.recursive = new RecursiveRepository(this);
+    try { this.migrate(); } catch (error) { this.db.close(); throw error; }
     this.clearUnverifiedRuntime();
   }
 
   migrate() {
-    this.db.exec(`
+    const version = this.db.prepare('PRAGMA user_version').get().user_version;
+    if (version > RECURSIVE_SCHEMA_VERSION) throw new Error('Версия базы Makora новее поддерживаемой.');
+    if (version === RECURSIVE_SCHEMA_VERSION) return;
+    this.transaction(() => {
+      this.db.exec(`
       CREATE TABLE IF NOT EXISTS projects (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
@@ -316,8 +322,9 @@ class Store {
       );
       CREATE INDEX IF NOT EXISTS idx_audit_project ON audit(project_id, id);
       CREATE INDEX IF NOT EXISTS idx_decisions_project ON decisions(project_id, id);
-    `);
-    this.db.exec('PRAGMA user_version = 1;');
+      `);
+      this.recursive.migrate();
+    });
   }
 
   // После перезапуска процесса мы не имеем права утверждать, что демо всё ещё работает.
@@ -497,6 +504,7 @@ class Store {
       designs,
       runs,
       decisions,
+      recursivePlans: this.recursive.list(project.id),
     };
   }
 
@@ -557,6 +565,8 @@ class Store {
       case 'project.phase': result = this.projectPhase(payload, actor); break;
       case 'task.put': result = this.taskPut(payload, actor); break;
       case 'task.accept': result = this.taskAccept(payload, actor); break;
+      case 'plan.put':
+      case 'plan.draft': result = this.recursive.put(payload, actor); break;
       case 'idea.add': result = this.ideaAdd(payload, actor); break;
       case 'idea.decide': result = this.ideaDecide(payload, actor); break;
       case 'lab.propose': result = this.labPropose(payload, actor); break;
