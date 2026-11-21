@@ -4,20 +4,21 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { assertSafeRelativePath, isRuntimeExcluded } = require('../../verified-workspaces.cjs');
+const { ordinaryPath } = require('../windows-path.cjs');
 const { fingerprint, hashBytes, requirePlan, SHA } = require('./plan.cjs');
 
 function samePath(a, b) {
-  return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+  return process.platform === 'win32' ? ordinaryPath(a).toLowerCase() === ordinaryPath(b).toLowerCase() : a === b;
 }
 
 function inside(root, target) {
-  const relative = path.relative(root, target);
+  const relative = path.relative(ordinaryPath(root), ordinaryPath(target));
   return relative !== '' && !path.isAbsolute(relative) && relative !== '..' && !relative.startsWith('..' + path.sep);
 }
 
 function realDirectory(value) {
   requirePlan(typeof value === 'string' && path.isAbsolute(value), 'artifact.directory', 'Нужен абсолютный каталог.');
-  const full = path.resolve(value);
+  const full = path.resolve(ordinaryPath(value));
   let current = full;
   for (;;) {
     const stat = fs.lstatSync(current);
@@ -26,7 +27,7 @@ function realDirectory(value) {
     if (parent === current) break;
     current = parent;
   }
-  return fs.realpathSync.native(full);
+  return ordinaryPath(fs.realpathSync.native(full));
 }
 
 function regular(root, relative, optional = false) {

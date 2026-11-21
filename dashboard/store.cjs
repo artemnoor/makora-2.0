@@ -7,6 +7,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
+const { ordinaryPath } = require('./windows-path.cjs');
 const { RecursiveRepository } = require('./recursive/repository.cjs');
 const outsource = require('./outsource.cjs');
 const archive = require('./outsource-archive.cjs');
@@ -149,11 +150,11 @@ function newId(prefix) {
 
 function realDirectory(value, label = 'путь') {
   if (typeof value !== 'string' || !value.trim()) fail(`Укажите ${label}.`, 'field.required', { field: label });
-  const absolute = path.resolve(value.trim());
+  const absolute = path.resolve(ordinaryPath(value.trim()));
   let real;
   try {
     // Не нативная форма сохраняет длинные имена Windows и всё равно разряжает символические ссылки.
-    real = fs.realpathSync(absolute);
+    real = ordinaryPath(fs.realpathSync(absolute));
   } catch {
     fail(`${label[0].toUpperCase() + label.slice(1)} не существует или недоступен: ${absolute}`, 'path.missing', { path: absolute });
   }

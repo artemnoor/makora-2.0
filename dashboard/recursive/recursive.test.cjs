@@ -149,6 +149,22 @@ test('snapshot and successive batches prove exact inputs, block conflicting sibl
     { code: 'artifact.conflict' });
 });
 
+test('Windows namespace paths can register projects and snapshot directory trees', (t) => {
+  if (process.platform !== 'win32') return t.skip('Windows namespace paths');
+  const { source, storage, dataDir } = folders(t);
+  const store = new Store({ dataDir });
+  try {
+    const namespaced = path.toNamespacedPath(source);
+    const registered = store.perform({ action: 'project.add', name: 'Namespaced project', path: namespaced });
+    const ordinary = store.perform({ action: 'project.add', name: 'Namespaced project', path: source });
+    assert.equal(registered.project.id, ordinary.project.id);
+    const snapshot = captureSnapshot(namespaced, path.join(storage, 'namespace-snapshot'), path.toNamespacedPath(storage));
+    assert.equal(snapshot.hashes['initial.txt'], hashBytes('before'));
+  } finally {
+    store.close();
+  }
+});
+
 test('provisional results are local to the branch and rejected inputs invalidate their consumers', () => {
   const draft = normalizePlan(plan([branch('root'), branch('left', 'root'), branch('right', 'root'),
     leaf('a', 'left'), leaf('b', 'left', ['a']), leaf('c', 'right', ['a']), leaf('d', 'right')]));
